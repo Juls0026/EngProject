@@ -1,0 +1,16 @@
+// Server Code (UDP Receiver)
+int sockfd;
+struct sockaddr_in serverAddr, clientAddr;
+socklen_t addr_size;
+char buffer[1024];
+
+sockfd = socket(AF_INET, SOCK_DGRAM, 0); // Create UDP socket
+
+serverAddr.sin_family = AF_INET;
+serverAdd.sin_port = htons(8888); // Listening on port 8888
+serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+bind(sockfd, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
+
+addr_size = sizeof(clientAddr);
+recvfrom(sockfd, buffer, 1024, 0, (struct sockaddr *) &clientAddr, &addr_size); // Receive audio packet
