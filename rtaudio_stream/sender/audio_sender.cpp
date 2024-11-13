@@ -52,4 +52,4 @@ int main() {
     snd_pcm_close(capture_handle);
     close(sockfd);
     return 0;
-}
+} 
