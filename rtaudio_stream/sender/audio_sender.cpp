@@ -6,7 +6,7 @@
 #include <cstring>
 #include <alsa/asoundlib.h>
 
-#define SERVER_IP "127.0.0.1"  // Change to receiver's IP if different
+#define SERVER_IP "192.168.1.85"  // Change to receiver's IP if different
 #define PORT 8888
 #define BUFSIZE 1024
 
