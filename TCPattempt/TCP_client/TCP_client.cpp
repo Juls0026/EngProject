@@ -2,60 +2,106 @@
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <thread>
+#include <alsa/asoundlib.h>
 
+#define SAMPLE_RATE 48000
+#define CHANNELS 2
+#define BUFFER_SIZE 1024  // Frames per buffer
 #define PORT 12345
 
-int main() {
-    int sock = 0;
-    sockaddr_in server_addr;
-    char buffer[1024] = {0};
+// ALSA setup for capture
+bool setupALSACapture(snd_pcm_t*& capture_handle) {
+    if (snd_pcm_open(&capture_handle, "default", SND_PCM_STREAM_CAPTURE, 0) < 0) {
+        std::cerr << "Error opening ALSA capture device.\n";
+        return false;
+    }
 
-    // 1. Create socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    if (snd_pcm_set_params(capture_handle, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, CHANNELS, SAMPLE_RATE, 1, 100000) < 0) {
+        std::cerr << "Error setting ALSA capture parameters.\n";
+        return false;
+    }
+
+    return true;
+}
+
+// ALSA setup for playback
+bool setupALSAPlayback(snd_pcm_t*& playback_handle) {
+    if (snd_pcm_open(&playback_handle, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+        std::cerr << "Error opening ALSA playback device.\n";
+        return false;
+    }
+
+    if (snd_pcm_set_params(playback_handle, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, CHANNELS, SAMPLE_RATE, 1, 100000) < 0) {
+        std::cerr << "Error setting ALSA playback parameters.\n";
+        return false;
+    }
+
+    return true;
+}
+
+// Function to capture and send audio
+void captureAndSend(snd_pcm_t* capture_handle, int sockfd) {
+    int16_t buffer[BUFFER_SIZE * CHANNELS];
+
+    while (true) {
+        snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE);
+        send(sockfd, buffer, BUFFER_SIZE * CHANNELS * sizeof(int16_t), 0);
+    }
+}
+
+// Function to receive and play audio
+void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd) {
+    int16_t buffer[BUFFER_SIZE * CHANNELS];
+
+    while (true) {
+        int bytes_received = recv(sockfd, buffer, sizeof(buffer), 0);
+        if (bytes_received > 0) {
+            int frames = bytes_received / (CHANNELS * sizeof(int16_t));
+            snd_pcm_writei(playback_handle, buffer, frames);
+        }
+    }
+}
+
+int main() {
+    int sockfd;
+    sockaddr_in server_addr;
+    snd_pcm_t *capture_handle, *playback_handle;
+
+    // Set up ALSA for capture and playback
+    if (!setupALSACapture(capture_handle) || !setupALSAPlayback(playback_handle)) {
+        return 1;
+    }
+
+    // Create socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         std::cerr << "Socket creation failed\n";
         return 1;
     }
 
-    // 2. Define server address
+    // Set server address
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
+    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
-    // Convert IP address to binary form
-    if (inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr) <= 0) {
-        std::cerr << "Invalid address or address not supported\n";
-        return 1;
-    }
-
-    // 3. Connect to the server
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    // Connect to the server
+    if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         std::cerr << "Connection failed\n";
+        close(sockfd);
         return 1;
     }
 
     std::cout << "Connected to server\n";
 
-    // 4. Communication: Send and receive data
-    while (true) {
-        std::cout << "Enter message: ";
-        std::string message;
-        std::getline(std::cin, message);
+    // Start threads for capture/send and receive/play
+    std::thread send_thread(captureAndSend, capture_handle, sockfd);
+    std::thread receive_thread(receiveAndPlay, playback_handle, sockfd);
 
-        if (message == "exit") break;
+    send_thread.join();
+    receive_thread.join();
 
-        send(sock, message.c_str(), message.size(), 0);
-
-        memset(buffer, 0, sizeof(buffer));
-        int valread = read(sock, buffer, sizeof(buffer));
-        if (valread <= 0) {
-            std::cout << "Server disconnected\n";
-            break;
-        }
-
-        std::cout << "Server replied: " << buffer << "\n";
-    }
-
-    // 5. Close the socket
-    close(sock);
-
+    snd_pcm_close(capture_handle);
+    snd_pcm_close(playback_handle);
+    close(sockfd);
     return 0;
 }
