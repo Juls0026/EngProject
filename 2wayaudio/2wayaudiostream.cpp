@@ -32,24 +32,19 @@ bool setupALSA(snd_pcm_t* &capture_handle, snd_pcm_t* &playback_handle) {
     return true;
 }
 
-void captureAndSend(snd_pcm_t* capture_handle, const std::vector<sockaddr_in> &peer_addresses, int sockfd) {
+void captureAndSend(snd_pcm_t* capture_handle, const std::vector<sockaddr_in>& peer_addresses, int sockfd) {
     int16_t buffer[BUFFER_SIZE * CHANNELS];
     while (true) {
-        // Capture audio data from ALSA
         ssize_t frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE);
         if (frames < 0) {
             std::cerr << "Audio capture error: " << snd_strerror(frames) << "\n";
-            snd_pcm_prepare(capture_handle); // Recover from errors
+            snd_pcm_prepare(capture_handle);
             continue;
         }
-
-        // Send the captured audio data to each peer
-        for (const auto &peer : peer_addresses) {
+        for (const auto& peer : peer_addresses) {
             ssize_t sent_bytes = sendto(sockfd, buffer, frames * sizeof(int16_t) * CHANNELS, 0, (struct sockaddr*)&peer, sizeof(peer));
             if (sent_bytes < 0) {
-                std::cerr << "Failed to send data to peer: " << strerror(errno) << "\n";
-            } else {
-                std::cout << "Sent " << sent_bytes << " bytes to peer\n";
+                std::cerr << "sendto error: " << strerror(errno) << "\n";
             }
         }
     }
@@ -59,27 +54,23 @@ void captureAndSend(snd_pcm_t* capture_handle, const std::vector<sockaddr_in> &p
 // Function to receive audio data from peers and play it back
 void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd) {
     int16_t buffer[BUFFER_SIZE * CHANNELS];
+    sockaddr_in sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+
     while (true) {
-        // Receive audio data from any peer
-        sockaddr_in sender_addr;
-        socklen_t sender_len = sizeof(sender_addr);
         ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&sender_addr, &sender_len);
-
-        if (received_bytes <= 0) {
-            std::cerr << "Failed to receive data: " << strerror(errno) << "\n";
-            continue;
-        }
-
-        // Play received audio data
-        ssize_t frames = snd_pcm_writei(playback_handle, buffer, received_bytes / (sizeof(int16_t) * CHANNELS));
-        if (frames < 0) {
-            std::cerr << "Audio playback error: " << snd_strerror(frames) << "\n";
-            snd_pcm_prepare(playback_handle); // Recover from errors
-        } else {
-            std::cout << "Played " << frames << " frames of audio\n";
+        if (received_bytes > 0) {
+            ssize_t frames = snd_pcm_writei(playback_handle, buffer, BUFFER_SIZE);
+            if (frames < 0) {
+                std::cerr << "Audio playback error: " << snd_strerror(frames) << "\n";
+                snd_pcm_prepare(playback_handle);
+            }
+        } else if (received_bytes < 0) {
+            std::cerr << "recvfrom error: " << strerror(errno) << "\n";
         }
     }
 }
+
 
 
 
@@ -95,25 +86,36 @@ void broadcastHello(int sockfd, int broadcast_port) {
 }
 
 // Listen for responses from peers
-void listenForPeers(int sockfd, std::set<std::string>& discovered_peers) {
+void listenForPeers(int sockfd, std::set<std::string>& discovered_peers, int timeout_seconds = 10) {
+    sockaddr_in sender_addr{};
+    socklen_t addr_len = sizeof(sender_addr);
     char buffer[1024];
-    sockaddr_in peer_addr{};
-    socklen_t addr_len = sizeof(peer_addr);
+    auto start_time = std::chrono::steady_clock::now();
 
     while (true) {
-        ssize_t bytes_received = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&peer_addr, &addr_len);
-        if (bytes_received > 0) {
-            buffer[bytes_received] = '\0';
-            std::string peer_ip = inet_ntoa(peer_addr.sin_addr);
-            discovered_peers.insert(peer_ip);
-            std::cout << "Discovered peer: " << peer_ip << "\n";
+        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&sender_addr, &addr_len);
+        if (received_bytes > 0) {
+            buffer[received_bytes] = '\0'; // Null-terminate
+            std::string sender_ip = inet_ntoa(sender_addr.sin_addr);
+            if (discovered_peers.find(sender_ip) == discovered_peers.end()) {
+                discovered_peers.insert(sender_ip);
+                std::cout << "Discovered peer: " << sender_ip << "\n";
+            }
+        }
+
+        // Exit after timeout
+        if (std::chrono::steady_clock::now() - start_time > std::chrono::seconds(timeout_seconds)) {
+            std::cout << "Peer discovery finished.\n";
+            break;
         }
     }
 }
 
+
 int main() {
     // ALSA handles for capture and playback
-    snd_pcm_t *capture_handle, *playback_handle;
+    snd_pcm_t* capture_handle;
+    snd_pcm_t* playback_handle;
     if (!setupALSA(capture_handle, playback_handle)) {
         std::cerr << "Failed to set up ALSA.\n";
         return 1;
@@ -126,14 +128,7 @@ int main() {
         return 1;
     }
 
-    // Enable broadcasting on the socket
-    int broadcast_enable = 1;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
-        std::cerr << "Failed to enable broadcast.\n";
-        return 1;
-    }
-
-    // Bind socket to listen for responses
+    // Bind socket to listen on UDP_PORT
     sockaddr_in local_addr{};
     local_addr.sin_family = AF_INET;
     local_addr.sin_addr.s_addr = INADDR_ANY;
@@ -145,15 +140,9 @@ int main() {
 
     // Discover peers
     std::set<std::string> discovered_peers;
-    std::thread discovery_thread(listenForPeers, sockfd, std::ref(discovered_peers));
+    listenForPeers(sockfd, discovered_peers);
 
-    // Broadcast HELLO message
-    broadcastHello(sockfd, UDP_PORT);
-
-    // Wait for responses
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-
-    // Convert discovered peers into sockaddr_in structures
+    // Convert discovered peers to sockaddr_in
     std::vector<sockaddr_in> peer_addresses;
     for (const auto& peer_ip : discovered_peers) {
         sockaddr_in peer_addr{};
@@ -168,20 +157,17 @@ int main() {
         return 1;
     }
 
-    std::cout << "Discovered peers:\n";
-    for (const auto& peer : peer_addresses) {
-        std::cout << inet_ntoa(peer.sin_addr) << "\n";
-    }
+    std::cout << "Peers discovered. Starting audio streaming...\n";
 
     // Start threads for capturing/sending and receiving/playing
     std::thread send_thread(captureAndSend, capture_handle, std::ref(peer_addresses), sockfd);
     std::thread receive_thread(receiveAndPlay, playback_handle, sockfd);
 
+    // Wait for threads to complete (if ever)
     send_thread.join();
     receive_thread.join();
 
     // Clean up
-    discovery_thread.detach(); // Allow discovery thread to exit
     snd_pcm_close(capture_handle);
     snd_pcm_close(playback_handle);
     close(sockfd);
