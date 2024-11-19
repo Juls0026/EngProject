@@ -32,29 +32,55 @@ bool setupALSA(snd_pcm_t* &capture_handle, snd_pcm_t* &playback_handle) {
     return true;
 }
 
-// Function to capture and send audio to all peers
 void captureAndSend(snd_pcm_t* capture_handle, const std::vector<sockaddr_in> &peer_addresses, int sockfd) {
     int16_t buffer[BUFFER_SIZE * CHANNELS];
     while (true) {
         // Capture audio data from ALSA
-        snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE);
+        ssize_t frames = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE);
+        if (frames < 0) {
+            std::cerr << "Audio capture error: " << snd_strerror(frames) << "\n";
+            snd_pcm_prepare(capture_handle); // Recover from errors
+            continue;
+        }
+
         // Send the captured audio data to each peer
         for (const auto &peer : peer_addresses) {
-            sendto(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&peer, sizeof(peer));
+            ssize_t sent_bytes = sendto(sockfd, buffer, frames * sizeof(int16_t) * CHANNELS, 0, (struct sockaddr*)&peer, sizeof(peer));
+            if (sent_bytes < 0) {
+                std::cerr << "Failed to send data to peer: " << strerror(errno) << "\n";
+            } else {
+                std::cout << "Sent " << sent_bytes << " bytes to peer\n";
+            }
         }
     }
 }
+
 
 // Function to receive audio data from peers and play it back
 void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd) {
     int16_t buffer[BUFFER_SIZE * CHANNELS];
     while (true) {
         // Receive audio data from any peer
-        recv(sockfd, buffer, sizeof(buffer), 0);
+        sockaddr_in sender_addr;
+        socklen_t sender_len = sizeof(sender_addr);
+        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&sender_addr, &sender_len);
+
+        if (received_bytes <= 0) {
+            std::cerr << "Failed to receive data: " << strerror(errno) << "\n";
+            continue;
+        }
+
         // Play received audio data
-        snd_pcm_writei(playback_handle, buffer, BUFFER_SIZE);
+        ssize_t frames = snd_pcm_writei(playback_handle, buffer, received_bytes / (sizeof(int16_t) * CHANNELS));
+        if (frames < 0) {
+            std::cerr << "Audio playback error: " << snd_strerror(frames) << "\n";
+            snd_pcm_prepare(playback_handle); // Recover from errors
+        } else {
+            std::cout << "Played " << frames << " frames of audio\n";
+        }
     }
 }
+
 
 
 // Broadcast "HELLO" message
@@ -85,7 +111,7 @@ void listenForPeers(int sockfd, std::set<std::string>& discovered_peers) {
     }
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     // ALSA handles for capture and playback
     snd_pcm_t *capture_handle, *playback_handle;
     if (!setupALSA(capture_handle, playback_handle)) {
@@ -124,7 +150,7 @@ int main(int argc, char* argv[]) {
     // Broadcast HELLO message
     broadcastHello(sockfd, UDP_PORT);
 
-    // Wait a few seconds for responses
+    // Wait for responses
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     // Convert discovered peers into sockaddr_in structures
@@ -135,6 +161,16 @@ int main(int argc, char* argv[]) {
         peer_addr.sin_port = htons(UDP_PORT);
         inet_pton(AF_INET, peer_ip.c_str(), &peer_addr.sin_addr);
         peer_addresses.push_back(peer_addr);
+    }
+
+    if (peer_addresses.empty()) {
+        std::cerr << "No peers discovered. Exiting.\n";
+        return 1;
+    }
+
+    std::cout << "Discovered peers:\n";
+    for (const auto& peer : peer_addresses) {
+        std::cout << inet_ntoa(peer.sin_addr) << "\n";
     }
 
     // Start threads for capturing/sending and receiving/playing
