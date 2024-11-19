@@ -67,7 +67,6 @@ void handleClient(int client_socket) {
 
 
 
-
 int main() {
     int server_fd, client_socket;
     sockaddr_in server_addr, client_addr;
@@ -81,7 +80,7 @@ int main() {
 
     // Bind socket to address and port
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_addr.s_addr = INADDR_ANY;  // Listen on all network interfaces
     server_addr.sin_port = htons(PORT);
 
     if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
@@ -109,12 +108,17 @@ int main() {
             continue;
         }
 
+        // Extract and log client IP
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+        std::cout << "New client connected from IP: " << client_ip 
+                  << " and port: " << ntohs(client_addr.sin_port) << "\n";
+
+        // Add client socket to the list
         {
             std::lock_guard<std::mutex> lock(client_mutex);
             client_sockets.push_back(client_socket);
         }
-
-        std::cout << "New client connected: " << client_socket << "\n";
 
         // Start a thread to handle the new client
         threads.emplace_back(std::thread(handleClient, client_socket));
