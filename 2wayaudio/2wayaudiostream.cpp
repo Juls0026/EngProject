@@ -5,6 +5,8 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <alsa/asoundlib.h>
+#include <set> // To store unique peer addresses
+
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 2
@@ -54,12 +56,36 @@ void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd) {
     }
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " peer_ip_1 peer_ip_2 ... peer_ip_n\n";
-        return 1;
-    }
 
+// Broadcast "HELLO" message
+void broadcastHello(int sockfd, int broadcast_port) {
+    sockaddr_in broadcast_addr{};
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_port = htons(broadcast_port);
+    broadcast_addr.sin_addr.s_addr = INADDR_BROADCAST;
+
+    const char* message = "HELLO";
+    sendto(sockfd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
+}
+
+// Listen for responses from peers
+void listenForPeers(int sockfd, std::set<std::string>& discovered_peers) {
+    char buffer[1024];
+    sockaddr_in peer_addr{};
+    socklen_t addr_len = sizeof(peer_addr);
+
+    while (true) {
+        ssize_t bytes_received = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&peer_addr, &addr_len);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            std::string peer_ip = inet_ntoa(peer_addr.sin_addr);
+            discovered_peers.insert(peer_ip);
+            std::cout << "Discovered peer: " << peer_ip << "\n";
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
     // ALSA handles for capture and playback
     snd_pcm_t *capture_handle, *playback_handle;
     if (!setupALSA(capture_handle, playback_handle)) {
@@ -74,7 +100,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Bind socket to listen on UDP_PORT
+    // Enable broadcasting on the socket
+    int broadcast_enable = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
+        std::cerr << "Failed to enable broadcast.\n";
+        return 1;
+    }
+
+    // Bind socket to listen for responses
     sockaddr_in local_addr{};
     local_addr.sin_family = AF_INET;
     local_addr.sin_addr.s_addr = INADDR_ANY;
@@ -84,13 +117,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Set up peer addresses from command-line arguments
+    // Discover peers
+    std::set<std::string> discovered_peers;
+    std::thread discovery_thread(listenForPeers, sockfd, std::ref(discovered_peers));
+
+    // Broadcast HELLO message
+    broadcastHello(sockfd, UDP_PORT);
+
+    // Wait a few seconds for responses
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+
+    // Convert discovered peers into sockaddr_in structures
     std::vector<sockaddr_in> peer_addresses;
-    for (int i = 1; i < argc; ++i) {
+    for (const auto& peer_ip : discovered_peers) {
         sockaddr_in peer_addr{};
         peer_addr.sin_family = AF_INET;
         peer_addr.sin_port = htons(UDP_PORT);
-        inet_pton(AF_INET, argv[i], &peer_addr.sin_addr);
+        inet_pton(AF_INET, peer_ip.c_str(), &peer_addr.sin_addr);
         peer_addresses.push_back(peer_addr);
     }
 
@@ -102,6 +145,7 @@ int main(int argc, char* argv[]) {
     receive_thread.join();
 
     // Clean up
+    discovery_thread.detach(); // Allow discovery thread to exit
     snd_pcm_close(capture_handle);
     snd_pcm_close(playback_handle);
     close(sockfd);
