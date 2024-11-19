@@ -8,7 +8,7 @@
 #define CHANNELS 2
 #define BUFFER_SIZE 1024  // Frames per buffer
 #define PORT 12345
-#define SERVER_IP "127.0.0.1"  // Replace with server IP for actual deployment
+#define SERVER_IP "192.168.1.83"  // Replace with server IP for actual deployment
 
 int main() {
     int sockfd;
