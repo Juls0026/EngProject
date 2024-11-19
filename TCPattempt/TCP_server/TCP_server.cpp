@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <alsa/asoundlib.h>
+#include <algorithm> 
+
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 2
