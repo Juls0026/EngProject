@@ -9,6 +9,8 @@
 #include <mutex>
 #include <opencv2/opencv.hpp>
 #include <algorithm>
+#include <chrono> 
+
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 2
@@ -16,18 +18,29 @@
 #define UDP_PORT 12345
 #define BROADCAST_INTERVAL 5 // Seconds between HELLO broadcasts
 
-// Audio packet
+// Packet Structures
+
+// Audio packet structure
 struct AudioPacket {
     uint32_t seq_num;
+    uint64_t timestamp; // Add a timestamp
     int16_t audio_data[BUFFER_SIZE * CHANNELS];
 };
 
-// Video packet
+// Video packet structure
 struct VideoPacket {
     uint32_t seq_num;
+    uint64_t timestamp; // Add a timestamp
     size_t data_size;
-    unsigned char data[65536]; // Large enough for compressed frame
+    unsigned char data[65536];
 };
+// Helper function to get the current timestamp in microseconds
+uint64_t getCurrentTimestamp() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 
 // Setup ALSA for audio
 bool setupALSA(snd_pcm_t* &capture_handle, snd_pcm_t* &playback_handle) {
@@ -145,7 +158,37 @@ void receiveAndDisplayVideo(int sockfd, std::atomic<bool>& running) {
     }
 }
 
+void broadcastHello(int sockfd, sockaddr_in& broadcast_addr, std::atomic<bool>& running) {
+    const char* message = "HELLO";
+
+    while (running) {
+        if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
+            std::cerr << "Failed to broadcast HELLO: " << strerror(errno) << "\n";
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(BROADCAST_INTERVAL));
+    }
+}
+
+void listenForPeers(int sockfd, std::vector<sockaddr_in>& peer_addresses, std::mutex& peer_mutex, std::atomic<bool>& running) {
+    char buffer[1024];
+    sockaddr_in peer_addr{};
+    socklen_t addr_len = sizeof(peer_addr);
+
+    while (running) {
+        ssize_t bytes_received = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&peer_addr, &addr_len);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+            if (strcmp(buffer, "HELLO") == 0) {
+                std::lock_guard<std::mutex> lock(peer_mutex);
+                peer_addresses.push_back(peer_addr);
+            }
+        }
+    }
+}
+
+
 int main() {
+    // Main function implementation
     std::atomic<bool> running(true);
     snd_pcm_t *capture_handle, *playback_handle;
 
@@ -170,6 +213,7 @@ int main() {
     std::vector<sockaddr_in> peer_addresses;
     std::mutex peer_mutex;
 
+    // Start threads for audio, video, and peer discovery
     std::thread audio_send_thread(captureAndSendAudio, capture_handle, std::ref(peer_addresses), sockfd, std::ref(running), std::ref(peer_mutex));
     std::thread video_send_thread(captureAndSendVideo, std::ref(peer_addresses), sockfd, std::ref(running), std::ref(peer_mutex));
     std::thread audio_receive_thread(receiveAndPlayAudio, playback_handle, sockfd, std::ref(running));
@@ -179,6 +223,7 @@ int main() {
     std::cin.get();
     running = false;
 
+    // Join threads and clean up resources
     audio_send_thread.join();
     video_send_thread.join();
     audio_receive_thread.join();
