@@ -52,9 +52,6 @@ void captureAndSend(snd_pcm_t* capture_handle, std::vector<sockaddr_in>& peer_ad
 
         packet.seq_num = seq_num++;
 
-        // Debugging log
-        std::cout << "Sending packet with seq_num: " << packet.seq_num << " First sample: " << packet.audio_data[0] << "\n";
-
         std::lock_guard<std::mutex> lock(peer_mutex);
         auto peers_copy = peer_addresses;
 
@@ -79,13 +76,13 @@ void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd, std::atomic<bool>& r
             continue;
         }
 
-        // Debugging log
-        std::cout << "Received packet with seq_num: " << packet.seq_num << " First sample: " << packet.audio_data[0] << "\n";
-
         if (packet.seq_num != last_seq_num + 1) {
             uint32_t lost_packets = packet.seq_num - last_seq_num - 1;
             for (uint32_t i = 0; i < lost_packets; ++i) {
-                snd_pcm_writei(playback_handle, silence, BUFFER_SIZE);
+                int frames_written = snd_pcm_writei(playback_handle, silence, BUFFER_SIZE);
+                if (frames_written < 0) {
+                    snd_pcm_prepare(playback_handle);
+                }
             }
         }
 
@@ -97,7 +94,6 @@ void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd, std::atomic<bool>& r
         last_seq_num = packet.seq_num;
     }
 }
-
 
 void broadcastHello(int sockfd, sockaddr_in& broadcast_addr, std::atomic<bool>& running) {
     const char* message = "HELLO";
