@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <alsa/asoundlib.h>
 #include <set> // To store unique peer addresses
+#include <chrono> 
 
 
 #define SAMPLE_RATE 48000
@@ -41,14 +42,21 @@ void captureAndSend(snd_pcm_t* capture_handle, const std::vector<sockaddr_in>& p
             snd_pcm_prepare(capture_handle);
             continue;
         }
+
         for (const auto& peer : peer_addresses) {
-            ssize_t sent_bytes = sendto(sockfd, buffer, frames * sizeof(int16_t) * CHANNELS, 0, (struct sockaddr*)&peer, sizeof(peer));
+            ssize_t sent_bytes = sendto(sockfd, buffer, frames * sizeof(int16_t) * CHANNELS, 0, 
+                                        (struct sockaddr*)&peer, sizeof(peer));
             if (sent_bytes < 0) {
-                std::cerr << "sendto error: " << strerror(errno) << "\n";
+                std::cerr << "Error sending audio to peer " 
+                          << inet_ntoa(peer.sin_addr) << ": " << strerror(errno) << "\n";
+            } else {
+                std::cout << "Sent " << sent_bytes << " bytes to peer " 
+                          << inet_ntoa(peer.sin_addr) << "\n";
             }
         }
     }
 }
+
 
 
 // Function to receive audio data from peers and play it back
@@ -58,18 +66,23 @@ void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd) {
     socklen_t sender_len = sizeof(sender_addr);
 
     while (true) {
-        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&sender_addr, &sender_len);
+        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, 
+                                          (struct sockaddr*)&sender_addr, &sender_len);
         if (received_bytes > 0) {
+            std::cout << "Received " << received_bytes << " bytes from peer " 
+                      << inet_ntoa(sender_addr.sin_addr) << "\n";
+
             ssize_t frames = snd_pcm_writei(playback_handle, buffer, BUFFER_SIZE);
             if (frames < 0) {
                 std::cerr << "Audio playback error: " << snd_strerror(frames) << "\n";
                 snd_pcm_prepare(playback_handle);
             }
         } else if (received_bytes < 0) {
-            std::cerr << "recvfrom error: " << strerror(errno) << "\n";
+            std::cerr << "recvfrom error during audio reception: " << strerror(errno) << "\n";
         }
     }
 }
+
 
 
 
@@ -93,23 +106,35 @@ void listenForPeers(int sockfd, std::set<std::string>& discovered_peers, int tim
     auto start_time = std::chrono::steady_clock::now();
 
     while (true) {
-        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&sender_addr, &addr_len);
-        if (received_bytes > 0) {
-            buffer[received_bytes] = '\0'; // Null-terminate
-            std::string sender_ip = inet_ntoa(sender_addr.sin_addr);
-            if (discovered_peers.find(sender_ip) == discovered_peers.end()) {
-                discovered_peers.insert(sender_ip);
-                std::cout << "Discovered peer: " << sender_ip << "\n";
-            }
-        }
-
-        // Exit after timeout
+        // Check for timeout
         if (std::chrono::steady_clock::now() - start_time > std::chrono::seconds(timeout_seconds)) {
             std::cout << "Peer discovery finished.\n";
             break;
         }
+
+        // Attempt to receive a message
+        ssize_t received_bytes = recvfrom(sockfd, buffer, sizeof(buffer) - 1, MSG_DONTWAIT, 
+                                          (struct sockaddr*)&sender_addr, &addr_len);
+        if (received_bytes > 0) {
+            // Null-terminate the buffer to handle it as a string
+            buffer[received_bytes] = '\0'; 
+            std::string sender_ip = inet_ntoa(sender_addr.sin_addr);
+
+            // Check if the peer is already discovered
+            if (discovered_peers.find(sender_ip) == discovered_peers.end()) {
+                discovered_peers.insert(sender_ip);
+                std::cout << "Discovered peer: " << sender_ip << "\n";
+            }
+        } else if (received_bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            // Handle any unexpected errors from recvfrom
+            std::cerr << "recvfrom error during peer discovery: " << strerror(errno) << "\n";
+        }
+
+        // Optional: Add a short sleep to avoid busy waiting
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
+
 
 
 int main() {
@@ -128,21 +153,33 @@ int main() {
         return 1;
     }
 
+    // Enable broadcast for HELLO messages
+    int broadcast_enable = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
+        std::cerr << "Failed to enable broadcast: " << strerror(errno) << "\n";
+        return 1;
+    }
+
     // Bind socket to listen on UDP_PORT
     sockaddr_in local_addr{};
     local_addr.sin_family = AF_INET;
     local_addr.sin_addr.s_addr = INADDR_ANY;
     local_addr.sin_port = htons(UDP_PORT);
     if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
-        std::cerr << "Failed to bind socket.\n";
+        std::cerr << "Failed to bind socket: " << strerror(errno) << "\n";
         return 1;
     }
 
     // Discover peers
     std::set<std::string> discovered_peers;
+    broadcastHello(sockfd, UDP_PORT);
     listenForPeers(sockfd, discovered_peers);
 
-    // Convert discovered peers to sockaddr_in
+    if (discovered_peers.empty()) {
+        std::cerr << "No peers discovered. Exiting.\n";
+        return 1;
+    }
+
     std::vector<sockaddr_in> peer_addresses;
     for (const auto& peer_ip : discovered_peers) {
         sockaddr_in peer_addr{};
@@ -150,11 +187,6 @@ int main() {
         peer_addr.sin_port = htons(UDP_PORT);
         inet_pton(AF_INET, peer_ip.c_str(), &peer_addr.sin_addr);
         peer_addresses.push_back(peer_addr);
-    }
-
-    if (peer_addresses.empty()) {
-        std::cerr << "No peers discovered. Exiting.\n";
-        return 1;
     }
 
     std::cout << "Peers discovered. Starting audio streaming...\n";
@@ -174,3 +206,4 @@ int main() {
 
     return 0;
 }
+
