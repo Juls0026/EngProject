@@ -8,6 +8,12 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <rtc/rtc.hpp>
+#include <iostream>
+#include <thread>
+#include <opencv2/opencv.hpp>
+#include <asio.hpp>
+
 
 #define SAMPLE_RATE 48000
 #define CHANNELS 2
@@ -19,6 +25,45 @@ struct AudioPacket {
     uint32_t seq_num;           
     int16_t audio_data[BUFFER_SIZE * CHANNELS]; 
 };
+
+void startSignaling(rtc::PeerConnection& pc, const std::string& signalingServerUrl) {
+    asio::io_context ioContext;
+    asio::ip::tcp::resolver resolver(ioContext);
+    auto endpoints = resolver.resolve(signalingServerUrl, "8765");
+    asio::ip::tcp::socket socket(ioContext);
+    asio::connect(socket, endpoints);
+
+    std::thread signalingThread([&]() {
+        while (true) {
+            char buffer[1024];
+            size_t length = socket.read_some(asio::buffer(buffer));
+            std::string message(buffer, length);
+
+            if (message.find("sdp") != std::string::npos) {
+                rtc::Description desc(message, "offer");
+                pc.setRemoteDescription(desc);
+            } else if (message.find("candidate") != std::string::npos) {
+                rtc::Candidate candidate(message);
+                pc.addRemoteCandidate(candidate);
+            }
+        }
+    });
+
+    pc.onLocalDescription([&](rtc::Description desc) {
+        std::string sdpMessage = desc.toSdp();  // Use toSdp() method here
+        asio::write(socket, asio::buffer(sdpMessage));
+    });
+
+    pc.onLocalCandidate([&](rtc::Candidate candidate) {
+        std::string iceMessage = candidate.toString();  // Use toString() method here
+        asio::write(socket, asio::buffer(iceMessage));
+    });
+
+    signalingThread.detach();
+}
+
+
+
 
 bool setupALSA(snd_pcm_t* &capture_handle, snd_pcm_t* &playback_handle) {
     if (snd_pcm_open(&capture_handle, "default", SND_PCM_STREAM_CAPTURE, 0) < 0) {
@@ -34,35 +79,44 @@ bool setupALSA(snd_pcm_t* &capture_handle, snd_pcm_t* &playback_handle) {
     return true;
 }
 
-void captureAndSend(snd_pcm_t* capture_handle, std::vector<sockaddr_in>& peer_addresses, int sockfd, std::atomic<bool>& running, std::mutex& peer_mutex) {
-    AudioPacket packet = {};
-    uint32_t seq_num = 0;
+void captureAndSendAudio(snd_pcm_t* capture_handle, std::shared_ptr<rtc::Track> audioTrack, std::atomic<bool>& running) {
+    int16_t buffer[BUFFER_SIZE * CHANNELS];
 
     while (running) {
-        int frames_read = snd_pcm_readi(capture_handle, packet.audio_data, BUFFER_SIZE);
+        int frames_read = snd_pcm_readi(capture_handle, buffer, BUFFER_SIZE);
         if (frames_read < 0) {
             std::cerr << "ALSA capture error: " << snd_strerror(frames_read) << "\n";
-            if (snd_pcm_prepare(capture_handle) < 0) {
-                std::cerr << "Failed to recover ALSA capture device.\n";
-                running = false;
-                break;
-            }
             continue;
         }
 
-        packet.seq_num = seq_num++;
-
-        std::lock_guard<std::mutex> lock(peer_mutex);
-        auto peers_copy = peer_addresses;
-
-        for (const auto& peer : peers_copy) {
-            ssize_t bytes_sent = sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&peer, sizeof(peer));
-            if (bytes_sent < 0) {
-                std::cerr << "Error sending audio packet.\n";
-            }
-        }
+        audioTrack->send(reinterpret_cast<const std::byte*>(buffer), frames_read * CHANNELS * sizeof(int16_t));
     }
 }
+
+
+void captureAndSendVideo(std::shared_ptr<rtc::Track> videoTrack, std::atomic<bool>& running) {
+    cv::VideoCapture cap(0); // Open the default camera
+    if (!cap.isOpened()) {
+        std::cerr << "Failed to open camera.\n";
+        return;
+    }
+
+    cv::Mat frame;
+    while (running) {
+        cap.read(frame);
+        if (frame.empty()) continue;
+
+        // Resize frame for WebRTC
+        cv::resize(frame, frame, cv::Size(640, 480));
+
+        rtc::binary videoData(reinterpret_cast<const std::byte*>(frame.data),
+                              reinterpret_cast<const std::byte*>(frame.data) + frame.total() * frame.elemSize());
+        videoTrack->send(videoData);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(30)); // Approx 30 FPS
+    }
+}
+
 
 void receiveAndPlay(snd_pcm_t* playback_handle, int sockfd, std::atomic<bool>& running) {
     AudioPacket packet = {};
@@ -132,55 +186,37 @@ void listenForPeers(int sockfd, std::vector<sockaddr_in>& peer_addresses, std::m
 
 int main() {
     std::atomic<bool> running(true);
-    snd_pcm_t *capture_handle, *playback_handle;
+    snd_pcm_t* capture_handle;
+    snd_pcm_t* playback_handle = nullptr;  // Add playback handle for setupALSA
 
+    rtc::Configuration config;
+    config.iceServers.emplace_back("stun:stun.l.google.com:19302");
+
+    // Create PeerConnection
+    rtc::PeerConnection pc(config);
+    auto audioTrack = pc.addTrack(rtc::Description::Media::Audio);  // Use Media::Audio
+    auto videoTrack = pc.addTrack(rtc::Description::Media::Video);  // Use Media::Video
+
+    // Start signaling
+    startSignaling(pc, "localhost");
+
+    // Setup ALSA for audio capture
     if (!setupALSA(capture_handle, playback_handle)) {
         return 1;
     }
 
-    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        std::cerr << "Failed to create socket.\n";
-        return 1;
-    }
-
-    int broadcast_enable = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable));
-
-    sockaddr_in local_addr{};
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = INADDR_ANY;
-    local_addr.sin_port = htons(UDP_PORT);
-    if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
-        std::cerr << "Failed to bind socket.\n";
-        return 1;
-    }
-
-    sockaddr_in broadcast_addr{};
-    broadcast_addr.sin_family = AF_INET;
-    broadcast_addr.sin_port = htons(UDP_PORT);
-    broadcast_addr.sin_addr.s_addr = INADDR_BROADCAST;
-
-    std::vector<sockaddr_in> peer_addresses;
-    std::mutex peer_mutex;
-
-    std::thread broadcast_thread(broadcastHello, sockfd, std::ref(broadcast_addr), std::ref(running));
-    std::thread peer_thread(listenForPeers, sockfd, std::ref(peer_addresses), std::ref(peer_mutex), std::ref(running));
-    std::thread send_thread(captureAndSend, capture_handle, std::ref(peer_addresses), sockfd, std::ref(running), std::ref(peer_mutex));
-    std::thread receive_thread(receiveAndPlay, playback_handle, sockfd, std::ref(running));
+    // Start threads for audio and video
+    std::thread audioThread(captureAndSendAudio, capture_handle, audioTrack, std::ref(running));
+    std::thread videoThread(captureAndSendVideo, videoTrack, std::ref(running));
 
     std::cout << "Press Enter to stop...\n";
     std::cin.get();
     running = false;
 
-    broadcast_thread.join();
-    peer_thread.join();
-    send_thread.join();
-    receive_thread.join();
-
+    audioThread.join();
+    videoThread.join();
     snd_pcm_close(capture_handle);
     snd_pcm_close(playback_handle);
-    close(sockfd);
 
     return 0;
 }
