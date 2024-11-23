@@ -50,12 +50,12 @@ void startSignaling(rtc::PeerConnection& pc, const std::string& signalingServerU
     });
 
     pc.onLocalDescription([&](rtc::Description desc) {
-        std::string sdpMessage = desc.toSdp();  // Use toSdp() method here
+        std::string sdpMessage = std::string(desc);  // Use toSdp() method here
         asio::write(socket, asio::buffer(sdpMessage));
     });
 
     pc.onLocalCandidate([&](rtc::Candidate candidate) {
-        std::string iceMessage = candidate.toString();  // Use toString() method here
+        std::string iceMessage = std::string(candidate); // Use toString() method here
         asio::write(socket, asio::buffer(iceMessage));
     });
 
@@ -187,15 +187,23 @@ void listenForPeers(int sockfd, std::vector<sockaddr_in>& peer_addresses, std::m
 int main() {
     std::atomic<bool> running(true);
     snd_pcm_t* capture_handle;
-    snd_pcm_t* playback_handle = nullptr;  // Add playback handle for setupALSA
+    snd_pcm_t* playback_handle = nullptr;
 
     rtc::Configuration config;
     config.iceServers.emplace_back("stun:stun.l.google.com:19302");
 
     // Create PeerConnection
     rtc::PeerConnection pc(config);
-    auto audioTrack = pc.addTrack(rtc::Description::Media::Audio);  // Use Media::Audio
-    auto videoTrack = pc.addTrack(rtc::Description::Media::Video);  // Use Media::Video
+
+    // Create and add audio track
+    rtc::Description::Audio audio("audio");
+    audio.addOpusCodec(111); // Opus codec
+    auto audioTrack = pc.addTrack(audio);
+
+    // Create and add video track
+    rtc::Description::Video video("video");
+    video.addH264Codec(96); // H.264 codec
+    auto videoTrack = pc.addTrack(video);
 
     // Start signaling
     startSignaling(pc, "localhost");

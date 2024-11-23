@@ -1,23 +1,26 @@
 import asyncio
 import websockets
 
+# Store all connected peers
 peers = set()
 
 async def signaling_server(websocket, path):
     peers.add(websocket)
     try:
         async for message in websocket:
-            # Forward messages to all peers except sender
+            # Broadcast the message to all other peers
             for peer in peers:
                 if peer != websocket:
                     await peer.send(message)
-    except websockets.exceptions.ConnectionClosed:
-        print("Peer disconnected.")
     finally:
         peers.remove(websocket)
 
-start_server = websockets.serve(signaling_server, "localhost", 8765)
-print("Signaling server running on ws://localhost:8765")
+async def main():
+    # Start the server
+    async with websockets.serve(signaling_server, "localhost", 8765):
+        print("WebRTC signaling server running on ws://localhost:8765")
+        await asyncio.Future()  # Run forever
 
-asyncio.get_event_loop().run_until_complete(start_server)
-asyncio.get_event_loop().run_forever()
+# Run the main coroutine
+if __name__ == "__main__":
+    asyncio.run(main())
