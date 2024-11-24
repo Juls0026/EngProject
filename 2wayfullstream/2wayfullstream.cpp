@@ -85,33 +85,52 @@ void captureAndSendAudio(snd_pcm_t* capture_handle, std::vector<sockaddr_in>& pe
 
 // Capture and send video
 void captureAndSendVideo(std::vector<sockaddr_in>& peer_addresses, int sockfd, std::atomic<bool>& running, std::mutex& peer_mutex) {
-    cv::VideoCapture cap(0);
+    // Open the video capture with device 0 (typically the default webcam)
+    cv::VideoCapture cap(0, cv::CAP_V4L2);
     if (!cap.isOpened()) {
         std::cerr << "Failed to open video capture.\n";
         running = false;
         return;
     }
 
+    // Set capture properties to reduce frame resolution and ensure a consistent frame rate
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 320);  // Set to a lower resolution to reduce size
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 240); // Set to a lower resolution to reduce size
+    cap.set(cv::CAP_PROP_FPS, 30);           // Set frame rate to 30 frames per second
+
     VideoPacket packet = {};
     uint32_t seq_num = 0;
-    std::vector<uchar> encoded_frame;
 
     while (running) {
         cv::Mat frame;
-        cap >> frame;
-        if (frame.empty()) continue;
-
-        // Encode frame to reduce size
-        cv::imencode(".jpg", frame, encoded_frame);
-        if (encoded_frame.size() > sizeof(packet.data)) {
-            std::cerr << "Encoded frame too large to send.\n";
-            continue;
+        if (!cap.read(frame)) {
+            std::cerr << "Failed to capture video frame.\n";
+            continue; // Skip this iteration if capturing fails
         }
 
+        if (frame.empty()) continue;
+
+        // Encode frame with reduced quality to make it smaller
+        std::vector<uchar> encoded_frame;
+        std::vector<int> compression_params = {cv::IMWRITE_JPEG_QUALITY, 50}; // Set JPEG quality to 50 (reduce size)
+        
+        if (!cv::imencode(".jpg", frame, encoded_frame, compression_params)) {
+            std::cerr << "Failed to encode video frame.\n";
+            continue; // Skip this frame if encoding fails
+        }
+
+        // Check if encoded frame exceeds the size limit and skip sending if too large
+        if (encoded_frame.size() > sizeof(packet.data)) {
+            std::cerr << "Encoded frame too large to send. Size: " << encoded_frame.size() << " bytes\n";
+            continue; // Skip to the next iteration if the frame is too large
+        }
+
+        // Fill the packet details
         packet.seq_num = seq_num++;
         packet.data_size = encoded_frame.size();
         std::memcpy(packet.data, encoded_frame.data(), encoded_frame.size());
 
+        // Lock the mutex to safely access the peer addresses
         std::lock_guard<std::mutex> lock(peer_mutex);
         for (const auto& peer : peer_addresses) {
             sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&peer, sizeof(peer));
@@ -144,18 +163,33 @@ void receiveAndPlayAudio(snd_pcm_t* playback_handle, int sockfd, std::atomic<boo
 // Receive and display video
 void receiveAndDisplayVideo(int sockfd, std::atomic<bool>& running) {
     VideoPacket packet = {};
-    while (running) {
-        ssize_t bytes_received = recv(sockfd, &packet, sizeof(packet), 0);
-        if (bytes_received < 0) continue;
+    cv::namedWindow("Video Stream", cv::WINDOW_AUTOSIZE); // Create a named window to display video
 
+    while (running) {
+        // Receive a video packet
+        ssize_t bytes_received = recv(sockfd, &packet, sizeof(packet), 0);
+        if (bytes_received < 0) {
+            std::cerr << "Failed to receive video packet.\n";
+            continue;
+        }
+
+        // Decode the received packet into a frame
         cv::Mat frame = cv::imdecode(cv::Mat(1, packet.data_size, CV_8UC1, packet.data), cv::IMREAD_COLOR);
-        if (!frame.empty()) {
-            cv::imshow("Video Stream", frame);
-            if (cv::waitKey(1) == 27) { // Stop on ESC key
-                running = false;
-            }
+        if (frame.empty()) {
+            std::cerr << "Failed to decode video frame.\n";
+            continue; // Skip to the next packet if the frame is empty
+        }
+
+        // Display the frame
+        cv::imshow("Video Stream", frame);
+
+        // Wait for 1 millisecond and allow a key press (to stop using ESC key)
+        if (cv::waitKey(1) == 27) { // Press 'ESC' key to stop
+            running = false;
         }
     }
+
+    cv::destroyWindow("Video Stream"); // Destroy the window when finished
 }
 
 void broadcastHello(int sockfd, sockaddr_in& broadcast_addr, std::atomic<bool>& running) {
