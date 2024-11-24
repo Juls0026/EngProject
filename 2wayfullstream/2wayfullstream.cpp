@@ -162,9 +162,16 @@ void receiveAndPlayAudio(snd_pcm_t* playback_handle, int sockfd, std::atomic<boo
 
 // Receive and display video
 void receiveAndDisplayVideo(int sockfd, std::atomic<bool>& running) {
-    VideoPacket packet = {};
-    cv::namedWindow("Video Stream", cv::WINDOW_AUTOSIZE); // Create a named window to display video
+    // Create a named window to display video
+    cv::namedWindow("Video Stream", cv::WINDOW_AUTOSIZE);
 
+    // Create an initial blank frame (white or black) to force the window to open
+    cv::Mat blank_frame(240, 320, CV_8UC3, cv::Scalar(255, 255, 255)); // White frame (255, 255, 255)
+    cv::imshow("Video Stream", blank_frame);
+    cv::waitKey(1); // Small delay to display the initial frame
+
+    // Now enter the main loop to receive and display the actual video frames
+    VideoPacket packet = {};
     while (running) {
         // Receive a video packet
         ssize_t bytes_received = recv(sockfd, &packet, sizeof(packet), 0);
@@ -173,6 +180,9 @@ void receiveAndDisplayVideo(int sockfd, std::atomic<bool>& running) {
             continue;
         }
 
+        // Print debug message to indicate packet was received
+        std::cout << "Received video packet of size: " << bytes_received << " bytes.\n";
+
         // Decode the received packet into a frame
         cv::Mat frame = cv::imdecode(cv::Mat(1, packet.data_size, CV_8UC1, packet.data), cv::IMREAD_COLOR);
         if (frame.empty()) {
@@ -180,28 +190,19 @@ void receiveAndDisplayVideo(int sockfd, std::atomic<bool>& running) {
             continue; // Skip to the next packet if the frame is empty
         }
 
-        // Display the frame
+        // Display the received frame
         cv::imshow("Video Stream", frame);
 
-        // Wait for 1 millisecond and allow a key press (to stop using ESC key)
+        // Wait for 1 millisecond and allow for key press (to stop using ESC key)
         if (cv::waitKey(1) == 27) { // Press 'ESC' key to stop
             running = false;
         }
     }
 
-    cv::destroyWindow("Video Stream"); // Destroy the window when finished
+    // Destroy the window after the loop ends
+    cv::destroyWindow("Video Stream");
 }
 
-void broadcastHello(int sockfd, sockaddr_in& broadcast_addr, std::atomic<bool>& running) {
-    const char* message = "HELLO";
-
-    while (running) {
-        if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
-            std::cerr << "Failed to broadcast HELLO: " << strerror(errno) << "\n";
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(BROADCAST_INTERVAL));
-    }
-}
 
 void listenForPeers(int sockfd, std::vector<sockaddr_in>& peer_addresses, std::mutex& peer_mutex, std::atomic<bool>& running) {
     char buffer[1024];
