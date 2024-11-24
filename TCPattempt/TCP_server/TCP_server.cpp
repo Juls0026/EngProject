@@ -34,34 +34,29 @@ void handleClient(int client_socket) {
     ssize_t bytes_received;
 
     while (true) {
+        // Receive data from client
         bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
         if (bytes_received <= 0) {
             {
-                std::lock_guard<std::mutex> lock(client_mutex); // Protect vector access
-                
-                // Debug output
-                std::cout << "Removing client_socket: " << client_socket << std::endl;
-                for (int sock : client_sockets) {
-                    std::cout << "Existing socket: " << sock << std::endl;
-                }
-
-                // Use std::find to locate the client_socket in the vector
+                std::lock_guard<std::mutex> lock(client_mutex);
                 auto it = std::find(client_sockets.begin(), client_sockets.end(), client_socket);
-
                 if (it != client_sockets.end()) {
-                    client_sockets.erase(it); // Remove the client socket safely
-                    std::cout << "Client disconnected and removed: " << client_socket << std::endl;
-                } else {
-                    std::cerr << "Error: client_socket not found during removal.\n";
+                    client_sockets.erase(it);
                 }
             }
-
-            close(client_socket); // Clean up socket
+            close(client_socket);
             break;
         }
 
-        // Broadcast received audio to other clients
-        broadcastAudio(buffer, bytes_received, client_socket);
+        // If the received data is a timestamp, echo it back for latency measurement
+        if (bytes_received == sizeof(uint64_t)) {
+            send(client_socket, buffer, bytes_received, 0);
+        }
+
+        // Otherwise, broadcast audio data to other clients
+        else {
+            broadcastAudio(buffer, bytes_received, client_socket);
+        }
     }
 }
 
