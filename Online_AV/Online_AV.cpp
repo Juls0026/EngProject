@@ -1,19 +1,22 @@
 // Libraries 
  //Standard 
- #include <iostream>  //Error log and user interaction
- #include <vector>    //Dynamic array 
- #include <thread>    //Allow multithreading
- #include <mutex>     //multithread constant access 
- #include <algorithm> //search algorithm 
- #include <atomic>    //boolean control for multithreading
+#include <iostream>  //Error log and user interaction
+#include <vector>    //Dynamic array 
+#include <thread>    //Allow multithreading
+#include <mutex>     //multithread constant access 
+#include <algorithm> //search algorithm 
+#include <atomic>    //boolean control for multithreading
 
  //Sytem libraries
- #include <unistd.h>  //API functions; system calls 
- #include <cstring>   //string manipulation 
- #include <arpa/inet.h> //UDP and IP address handle (Network)
+#include <unistd.h>  //API functions; system calls 
+#include <cstring>   //string manipulation 
+#include <arpa/inet.h> //UDP and IP address handle (Network)
+#include <netinet/in.h>   // sockaddr_in
+#include <sys/socket.h>   // socket functions
+#include <cstddef>        // size_t
 
  //Audio 
- #include <alsa/asoundlib.h> //Audio capture and playback 
+#include <alsa/asoundlib.h> //Audio capture and playback 
 
 //Video (OpenCV)
 #include <opencv2/opencv.hpp> //Main OpenCV Library
@@ -42,9 +45,9 @@
 #define V_Quality 50 
 
 //Video packet size
-#define Max_Size 131072
+#define Max_Size 65507
 
-//UDP comms
+//UDP commsVideo transmission error.Message too long
 #define UDP_port 12345 //Communication port
 
 //Connection check 
@@ -62,11 +65,13 @@ struct Audio_Packet {
 
 
 //Video packet structure
-struct Video_Packet {
-    uint32_t v_sequence;
-    uint64_t timestamp;
-    size_t video_size; 
-    unsigned char Vdata[Max_Size]; 
+struct Video_Fragment{
+    uint32_t frame_seq;        //Video frame sequence
+    uint32_t fragment_i;       //Video fragment index
+    uint32_t total_fragments;      //Total fragments
+    bool last_fragment;        //Last fragment
+    size_t fragment_s;         //Fragment size
+    unsigned char Fdata[1400];  //Fragment data
 };
 
 //Setup Alsa
@@ -139,14 +144,13 @@ void VideoRecandSend(std::vector<sockaddr_in>& peer_List, int sockfd, std::atomi
 
     }
 
-    //Initialize video params
+    //Initialize video parameters
     cap.set(cv::CAP_PROP_FRAME_WIDTH, Width);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, Heighth);
     cap.set(cv::CAP_PROP_FPS, 30);
 
-    //Initialize packet and sequence
-    Video_Packet packet = {};
-    uint32_t v_sequence = 0;
+    //Initialize sequence
+    uint32_t frame_seq = 0;
 
     while (running) { 
         cv::Mat frame;
@@ -156,7 +160,7 @@ void VideoRecandSend(std::vector<sockaddr_in>& peer_List, int sockfd, std::atomi
 
         }
 
-        //Encode video data
+        //Encode frame data
         std::vector<uchar> enc_frame;
         std::vector<int> comp_params = {cv::IMWRITE_JPEG_QUALITY, V_Quality} ;
         if(!cv::imencode(".jpg", frame,enc_frame, comp_params)) {
@@ -165,42 +169,35 @@ void VideoRecandSend(std::vector<sockaddr_in>& peer_List, int sockfd, std::atomi
 
         }
 
-        //Check frame size
-        if (enc_frame.size() > sizeof(packet.Vdata)) {
-            std::cerr << "Frame is too large." << enc_frame.size() << " bytes. \n";
-            continue; 
+        size_t frame_size = enc_frame.size();
+        size_t max_fragment_s = sizeof(Video_Fragment::Fdata);
+        uint32_t total_fragments = (frame_size + max_fragment_s - 1) / max_fragment_s;
 
-        }
-
-
-        //Init packet
-        packet.v_sequence = v_sequence++;
-        packet.timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        packet.video_size = enc_frame.size();
-        std::memcpy(packet.Vdata, enc_frame.data(), enc_frame.size());
+       //Send fragments 
+        for (uint32_t fragment_i = 0; fragment_i < total_fragments; ++fragment_i) {
+            Video_Fragment fragment = {};
+            fragment.frame_seq = frame_seq;
+            fragment.fragment_i = fragment_i;
+            fragment.total_fragments = total_fragments;
+            fragment.last_fragment = (fragment_i == total_fragments - 1);
 
 
-        //Send packet to peers
-        std::lock_guard<std::mutex> lock(peer_mute);
+            size_t offset = fragment_i * max_fragment_s;
+            fragment.fragment_s = std::min(max_fragment_s, frame_size - offset);
+            std::memcpy(fragment.Fdata , enc_frame.data() + offset, fragment.fragment_s);
 
-        //Log peer list size
-        if (peer_List.empty()) {
-            std::cerr << "No connected peers. \n";
-            return;
+            std::lock_guard<std::mutex> lock(peer_mute);
+            for (const auto& peer : peer_List) {
+                ssize_t s_Bytes = sendto(sockfd, &fragment, sizeof(fragment), 0, (struct sockaddr*)&peer, sizeof(peer));
+                if (s_Bytes < 0) {
+                    std::cerr << "Transmission error: " << strerror(errno) << "\n";
 
-        }
-
-        for (const auto& peer : peer_List) {
-            ssize_t VideoBytes = sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&peer, sizeof(peer));
-            if (VideoBytes < 0) {
-                std::cerr << "Video transmission error." << strerror(errno) << "\n";
-            } else {
-                std::cerr << "Video sent to" << inet_ntoa(peer.sin_addr) << ":" << ntohs(peer.sin_port) << "(" << VideoBytes << " bytes) \n";
-
+                }
             }
         }
-    }
 
+        frame_seq++;
+    }
 }
 
 //Receive and playback audio function
@@ -233,32 +230,54 @@ void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnni
 //Recieve and play video 
 void VideoPlayback(int sockfd, std::atomic<bool>& running) {
 
-    //Open Video Window 
+    //Open playback window 
     cv::namedWindow("Stream", cv::WINDOW_AUTOSIZE);
 
-    //Initialize Video Stream
-    Video_Packet packet = {};
+    uint32_t current_frame_seq = 0;
+    std::vector<uchar> reassembled_frame;
+    std::map<uint32_t, std::vector<Video_Fragment>> fragment_buffer;
+
     while(running) {
-        ssize_t Video_Bytes = recv(sockfd, &packet, sizeof(packet), 0);
-        if (Video_Bytes < 0) {
-            std::cerr << "Video receive error. \n";
+        Video_Fragment fragment = {};
+        ssize_t received_bytes = recv(sockfd, &fragment, sizeof(fragment), 0);
+        if (received_bytes < 0) {
+            std::cerr << "Receiving error. \n";
             continue;
 
         }
 
 
-        //Decode video data 
-        cv::Mat frame = cv::imdecode(cv::Mat(1, packet.video_size, CV_8UC1, packet.Vdata), cv::IMREAD_COLOR);
-        if (frame.empty()) {
-            std::cerr << "Decoding video error. \n";
-            continue; 
+        //Load fragment in buffer
+        fragment_buffer[fragment.frame_seq].push_back(fragment);
 
-        }
+        //Check if fragments are received
+        if (fragment.last_fragment) {
+            auto& fragments = fragment_buffer[fragment.frame_seq];
+            if (fragments.size() == fragment.total_fragments) {
 
-        //Video Display 
-        cv::imshow("Stream", frame);
-        if (cv::waitKey(1) == 27) {  //Stop with Esc Key
-            running = false;
+                //Re-form frame 
+                reassembled_frame.clear();
+                std::sort(fragments.begin(), fragments.end(), [](const Video_Fragment& a, const Video_Fragment& b) {
+                    return a.fragment_i < b.fragment_i; 
+                });
+
+                for (const auto& frag : fragments) {
+                    reassembled_frame.insert(reassembled_frame.end(), frag.Fdata, frag.Fdata + frag.fragment_s);
+                }
+
+                //Decode and display frame 
+                cv::Mat frame = cv::imdecode(reassembled_frame, cv::IMREAD_COLOR);
+                if (!frame.empty()) {
+                    cv::imshow("Stream", frame);
+                    if (cv::waitKey(1) == 27) {
+                        running = false;
+                    } 
+                }
+
+                //Clear buffer 
+                fragment_buffer.erase(fragment.frame_seq);
+
+            }
         }
     }
 
@@ -338,7 +357,7 @@ int main() {
     //Enable broadcasting 
     int enable_brd = 1; 
     if (setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, &enable_brd, sizeof(enable_brd))< 0) {
-        std::cerr << "Failed to initialize broadcast: " << strerror(errno) << "ºn";
+        std::cerr << "Failed to initialize broadcast: " << strerror(errno) << "\n";
         close (sockfd);
         return 1;
     }
@@ -347,7 +366,7 @@ int main() {
     sockaddr_in local_address = {};
     local_address.sin_family = AF_INET;
     local_address.sin_port = htons(UDP_port);
-    local_address.sin_addr.s_addr = INADDR_BROADCAST;
+    local_address.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(sockfd, (struct sockaddr*)&local_address, sizeof(local_address)) < 0) {
         std::cerr << "Socket bind failed: " <<strerror(errno) << "\n";
