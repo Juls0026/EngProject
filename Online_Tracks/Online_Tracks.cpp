@@ -67,12 +67,12 @@ bool ALSAset(snd_pcm_t* &captureman, snd_pcm_t* &playbackman) {
         return false;
     }
 
-    if (snd_pcm_set_params(captureman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000) < 0) {
+    if (snd_pcm_set_params(captureman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 500000) < 0) {
         std::cerr << "Capture set params error.\n";
         return false;
     }
 
-    if (snd_pcm_set_params(playbackman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000) < 0) {
+    if (snd_pcm_set_params(playbackman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 500000) < 0) {
         std::cerr << "Playback set params error.\n";
         return false;
     }
@@ -121,7 +121,7 @@ void RecAndSend(snd_pcm_t* captureman, std::vector<PeerInfo>& peerIP, int sockfd
         }
 
         // Add small delay to avoid overloading the network
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
 }
 
@@ -137,7 +137,7 @@ void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnin
     std::queue<Audio_Packet> jitter_buffer;
     Audio_Packet packet = {};
     uint32_t last_sequ = 0;
-    const int buffer_delay = 5; // Adjust based on network conditions
+    const int buffer_delay = 15; // Adjust based on network conditions
 
     while (running) {
         ssize_t Audio_rec = recv(sockfd, &packet, sizeof(packet), 0);
@@ -146,7 +146,14 @@ void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnin
             continue;
         }
 
-        jitter_buffer.push(packet);
+        // Before entering the playback loop, wait until jitter buffer is sufficiently filled
+        while (jitter_buffer.size() < buffer_delay) {
+            ssize_t Audio_rec = recv(sockfd, &packet, sizeof(packet), 0);
+            if (Audio_rec > 0) {
+                jitter_buffer.push(packet);
+            }   
+        }
+
 
         // Wait until enough packets are in the buffer to start playback
         if (jitter_buffer.size() < buffer_delay) {
@@ -158,12 +165,12 @@ void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnin
         jitter_buffer.pop();
 
         // Handle missing packets
+        // If packet loss detected, use last valid packet to prevent underrun
         if (play_packet.sequence != last_sequ + 1) {
             std::cerr << "Packet loss detected. Expected: " << last_sequ + 1 << " but received: " << play_packet.sequence << "\n";
-            uint16_t silence[Buff_Size * Channels] = {0}; // Buffer of silence
-            snd_pcm_writei(playbackman, silence, Buff_Size);
+            snd_pcm_writei(playbackman, packet.audio_data, Buff_Size); // Replay last received packet to keep buffer filled
         } else {
-            last_sequ = play_packet.sequence;
+             last_sequ = play_packet.sequence;
         }
 
         // Playback
