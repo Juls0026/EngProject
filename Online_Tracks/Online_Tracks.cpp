@@ -137,7 +137,7 @@ void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnin
     std::queue<Audio_Packet> jitter_buffer;
     Audio_Packet packet = {};
     uint32_t last_sequ = 0;
-    const int buffer_delay = 15; // Adjust based on network conditions
+    const int buffer_delay = 20; // Adjust based on network conditions
 
     while (running) {
         ssize_t Audio_rec = recv(sockfd, &packet, sizeof(packet), 0);
