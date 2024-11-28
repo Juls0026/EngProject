@@ -48,7 +48,13 @@ void audio_receiver(asio::ip::udp::socket& socket, pa_simple* pa) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 5) {
+    // Debugging: Print argument count and the arguments passed
+    std::cout << "argc: " << argc << "\n";
+    for (int i = 0; i < argc; ++i) {
+        std::cout << "argv[" << i << "]: " << argv[i] << "\n";
+    }
+
+    if (argc != 4) {
         std::cerr << "Usage: " << argv[0] << " <local port> <receiver IP> <receiver port>\n";
         return 1;
     }
@@ -100,5 +106,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-
 
