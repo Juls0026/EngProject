@@ -19,13 +19,21 @@ void audio_sender(asio::ip::udp::socket& socket, asio::ip::udp::endpoint& receiv
                 break;
             }
 
+            // Get the current time as a timestamp
+            auto timestamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+            std::string timestamp_str = std::to_string(timestamp);
+            
+            // Append the timestamp to the beginning of the packet
+            std::string packet_data = timestamp_str + "|" + std::string(reinterpret_cast<char*>(buffer), sizeof(buffer));
+
             // Send the captured audio data via UDP
-            socket.send_to(asio::buffer(buffer, sizeof(buffer)), receiver_endpoint);
+            socket.send_to(asio::buffer(packet_data), receiver_endpoint);
         }
     } catch (std::exception& e) {
         std::cerr << "Sender exception: " << e.what() << "\n";
     }
 }
+
 
 void audio_receiver(asio::ip::udp::socket& socket, pa_simple* pa) {
     uint8_t buffer[SAMPLE_SIZE * CHANNELS * 2]; // 16-bit samples (2 bytes per sample)
