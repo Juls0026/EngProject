@@ -19,6 +19,10 @@
  #include <chrono>     //Timestamps
 
 
+
+#include <queue>
+
+
 //Global constants
 
 //Audio format
@@ -26,7 +30,7 @@
 #define Channels 2     //Stereo audio.
 
 //Audio buffer
-#define Buff_Size 1024 
+#define Buff_Size 4096 
 
 //UDP comms
 #define UDP_port 12345 //Communication port
@@ -53,91 +57,125 @@ struct PeerInfo {
 
 //Setup Alsa
 bool ALSAset(snd_pcm_t* &captureman, snd_pcm_t* &playbackman) {
-    
-    //Start audio capture; send message if failed
-    if (snd_pcm_open(&captureman, "default", SND_PCM_STREAM_CAPTURE, 0) < 0){
+    if (snd_pcm_open(&captureman, "default", SND_PCM_STREAM_CAPTURE, 0) < 0) {
         std::cerr << "Capturing error.\n";
-        return false; 
-    }
-
-    //Start audio playback; send message if failed 
-    if(snd_pcm_open(&playbackman, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
-        std::cerr << "Playback error. \n";
         return false;
     }
 
+    if (snd_pcm_open(&playbackman, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+        std::cerr << "Playback error.\n";
+        return false;
+    }
 
-    //Set audio stream parameters
-    snd_pcm_set_params(captureman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000);
-    snd_pcm_set_params(playbackman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000);
-    return true; //Successful setup
+    if (snd_pcm_set_params(captureman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000) < 0) {
+        std::cerr << "Capture set params error.\n";
+        return false;
+    }
 
+    if (snd_pcm_set_params(playbackman, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, S_Rate, 1, 10000) < 0) {
+        std::cerr << "Playback set params error.\n";
+        return false;
+    }
+
+    return true;
 }
+
 
 
 //Audio capture and send function
 void RecAndSend(snd_pcm_t* captureman, std::vector<PeerInfo>& peerIP, int sockfd, std::atomic<bool>& running, std::mutex& peer_mute) {
-    
-    //Initialize
-    Audio_Packet packet = {};
-    uint32_t sequence = 0; 
+    pthread_t this_thread = pthread_self();
+    struct sched_param params;
+    params.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    pthread_setschedparam(this_thread, SCHED_FIFO, &params);
 
-    while(running) {
+    
+    Audio_Packet packet = {};
+    uint32_t sequence = 0;
+
+    while (running) {
         int FrameNum = snd_pcm_readi(captureman, packet.audio_data, Buff_Size);
         if (FrameNum < 0) {
-            std::cerr << "Audio rec error" << snd_strerror(FrameNum) << "\n";
+            std::cerr << "Capture overrun: " << snd_strerror(FrameNum) << "\n";
             if (snd_pcm_prepare(captureman) < 0) {
-                std::cerr << "Audio device error. \n";
+                std::cerr << "Error recovering audio capture. Stopping...\n";
                 running = false;
                 break;
             }
             continue;
         }
 
-        //Set sequence number
-        packet.sequence = sequence++; 
+        // Set sequence number
+        packet.sequence = sequence++;
 
-        //Access peer IP address 
+        // Access peer IP addresses
         std::lock_guard<std::mutex> lock(peer_mute);
-        auto peersList = peerIP; 
+        auto peersList = peerIP;
 
-        //Send Audio to each peer
+        // Send audio to each peer
         for (const auto& peer : peersList) {
-            ssize_t Audio_size = sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&peer, sizeof(peer));
+            ssize_t Audio_size = sendto(sockfd, &packet, sizeof(packet), 0, (struct sockaddr*)&peer.address, sizeof(peer.address));
             if (Audio_size < 0) {
-                std::cerr << "Audio stream error. \n";
+                std::cerr << "Audio stream error.\n";
             }
         }
 
+        // Add small delay to avoid overloading the network
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
-//Receive and playback audio function
-void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& runnning){
 
-    //Initialize
+//Receive and playback audio function
+void AudioPlayback(snd_pcm_t* playbackman, int sockfd, std::atomic<bool>& running) {
+    pthread_t this_thread = pthread_self();
+    struct sched_param params;
+    params.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    pthread_setschedparam(this_thread, SCHED_FIFO, &params);
+
+    
+    std::queue<Audio_Packet> jitter_buffer;
     Audio_Packet packet = {};
     uint32_t last_sequ = 0;
-    uint16_t silence[Buff_Size * Channels] = {0}; //Buffer of 0s for lost packets 
+    const int buffer_delay = 5; // Adjust based on network conditions
 
-    while (runnning) { 
+    while (running) {
         ssize_t Audio_rec = recv(sockfd, &packet, sizeof(packet), 0);
         if (Audio_rec < 0) {
-            std::cerr << "Error receiving audio. \n";
+            std::cerr << "Error receiving audio: " << strerror(errno) << "\n";
             continue;
         }
 
+        jitter_buffer.push(packet);
 
-        int Frames_r = snd_pcm_writei(playbackman, packet.audio_data, Buff_Size);
-        if (Frames_r < 0) {
-            snd_pcm_prepare(playbackman);
+        // Wait until enough packets are in the buffer to start playback
+        if (jitter_buffer.size() < buffer_delay) {
+            continue;
         }
 
-        //Update sequence
-        last_sequ = packet.sequence;
-    }
+        // Get packet from buffer
+        Audio_Packet play_packet = jitter_buffer.front();
+        jitter_buffer.pop();
 
+        // Handle missing packets
+        if (play_packet.sequence != last_sequ + 1) {
+            std::cerr << "Packet loss detected. Expected: " << last_sequ + 1 << " but received: " << play_packet.sequence << "\n";
+            uint16_t silence[Buff_Size * Channels] = {0}; // Buffer of silence
+            snd_pcm_writei(playbackman, silence, Buff_Size);
+        } else {
+            last_sequ = play_packet.sequence;
+        }
+
+        // Playback
+        int Frames_r = snd_pcm_writei(playbackman, play_packet.audio_data, Buff_Size);
+        if (Frames_r < 0) {
+            std::cerr << "Playback underrun: " << snd_strerror(Frames_r) << "\n";
+            snd_pcm_prepare(playbackman);
+            continue;
+        }
+    }
 }
+
 
 
 //UDP hello broadcast 
@@ -215,11 +253,18 @@ int main() {
     std::mutex peer_mute;              // Protecting peer list
     std::atomic<bool> running(true);   // Flag to control threads
 
+   
     // UDP socket init
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         std::cerr << "Failed socket init: " << strerror(errno) << "\n";
         return 1;
+    }
+
+    // Increase the socket buffer size
+    int buffer_size = 2 * 1024 * 1024; // 2 MB buffer
+    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size)) < 0) {
+        std::cerr << "Failed to set receive buffer size: " << strerror(errno) << "\n";
     }
 
     // Bind the socket to the correct network interface
