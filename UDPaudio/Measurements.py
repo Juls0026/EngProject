@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 # Configuration
 RECEIVER_IP = "192.168.1.85"  # Change to your receiver IP
 RECEIVER_PORT = 54321          # Receiver port
-LOCAL_PORT = 12345             # Local port for listening
+LOCAL_PORT = 12346             # Local port for listening
 
 # Create socket for receiving data
 recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
