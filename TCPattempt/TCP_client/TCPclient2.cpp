@@ -241,6 +241,7 @@ int main() {
     //Connect to server
     int sockfd = connect_server(SERVER_IP, PORT);
     if (sockfd == -1) {
+        std::cerr << "Server connection error.\n";
         return 1;  //Unable to connnect 
 
     }
@@ -271,6 +272,8 @@ int main() {
         return 1;
     }
 
+    std::cout << "Python View connection successful.\n";
+
      //Audio Playback socket
     int local_sockfd_playback;     //local socket to connect to Python
     struct sockaddr_in local_addr_playback; 
@@ -287,9 +290,11 @@ int main() {
 
     //Connect to visualizer script 
     if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
-        perror("Python connection error (capt)");
+        perror("Python connection error (play)");
         return 1;
     }
+
+    std::cout << "Python playback view successful.\n";
 
 
     //Start capture and playback threads
