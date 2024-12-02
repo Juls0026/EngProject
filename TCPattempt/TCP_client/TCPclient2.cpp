@@ -8,6 +8,8 @@
 #include <mutex>     //Thread safety variables
 #include <atomic>
 
+#include <signal.h> 
+
 
 //POSIX libraries 
 #include <unistd.h>  //System calls
@@ -106,7 +108,7 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
 
     }
 
-
+    //ALSA audio parameter
     snd_pcm_hw_params_alloca(&hw_params);
     snd_pcm_hw_params_any(capture_man, hw_params);
     snd_pcm_hw_params_set_access(capture_man, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
@@ -120,7 +122,7 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
 
 
     //Start audio capture
-    while(true) {
+    while(!stop_streaming) {
         int fr_capture = snd_pcm_readi(capture_man, buffer, BUFFSIZE);
         if (fr_capture < 0) {
             fr_capture = snd_pcm_recover(capture_man, fr_capture, 0);
@@ -134,18 +136,25 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
         int byte_send = fr_capture * 2 * Channels; //Calculate bytes sent
         if (send(sockfd, buffer, byte_send, 0) == -1) {
             perror("error sending");
+            stop_streaming = true;
             break;
         }
 
-        //Send audio to Python (visualization) 
+        //Send audio to Python (visualization) + Check broken pipe
         if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
-            perror("Error sending data to Python");
+            if (errno == EPIPE) {
+                std::cerr <<"Visualizer disconnected - Broken pipe.\n";
+            } else {
+                perror("Error sending data to Python");
+
+            }
             stop_streaming = true;
             break;
         }
     }    
 
     snd_pcm_close(capture_man);
+    close(local_sockfd_capture);
 
 }
 
@@ -166,6 +175,7 @@ void play_audio(int sockfd, int local_sockfd_playback) {
 
     }
 
+    //ALSA audio parameters
     snd_pcm_hw_params_alloca(&hw_params);
     snd_pcm_hw_params_any(playback_man, hw_params);
     snd_pcm_hw_params_set_access(playback_man, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
@@ -177,7 +187,7 @@ void play_audio(int sockfd, int local_sockfd_playback) {
 
 
     //play audio 
-    while(true) {
+    while(!stop_streaming) {
         int byte_num = recv(sockfd, buffer, sizeof(buffer), 0);
         if (byte_num <= 0) {
             if (byte_num == 0) {
@@ -185,37 +195,48 @@ void play_audio(int sockfd, int local_sockfd_playback) {
             } else {
                 perror("recv error");
             }
-
+            stop_streaming = true;
             break;
         }
 
         int frames_play = byte_num / (Channels * 2);
-       if ((err = snd_pcm_writei(playback_man, buffer, frames_play)) < 0) {
+        if ((err = snd_pcm_writei(playback_man, buffer, frames_play)) < 0) {
             if (err == -EPIPE) {
                 std::cerr << "Buffer underrun occurred: " << snd_strerror(err) << "\n";
                 if ((err = snd_pcm_prepare(playback_man)) < 0) {
                     std::cerr << "Error recovering from underrum" << snd_strerror(err) << "\n";
+                    stop_streaming = true;
                     break;
                 
                 }
             } else {
                 std::cerr << "write to audio interface failed: " << snd_strerror(err) << "\n";
+                stop_streaming = true;
                 break;
             }
         }
 
+        //Python visualizer send
         if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
-            perror("Error sending playback to python");
+            if (errno == EPIPE) {
+                std::cerr << "Python visualizer disconnected. Playback pipe";
+            } else {
+                perror("Error sending playback to python");
+            }
+            stop_streaming = true;
             break;
         }
 
     }
 
-    snd_pcm_close(playback_man);
+    snd_pcm_close(playback_man); 
+    close(local_sockfd_playback);
 }
 
 
 int main() {
+    //Ignore SIGPIPE
+    signal(SIGPIPE, SIG_IGN);
 
     //Connect to server
     int sockfd = connect_server(SERVER_IP, PORT);

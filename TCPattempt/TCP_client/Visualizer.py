@@ -2,6 +2,7 @@ import socket
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import errno
 
 # Define constants
 HOST = '127.0.0.1'           # Localhost
@@ -19,6 +20,7 @@ capture_sock.listen(1)
 print("Waiting for connection from C++ client for captured audio...")
 capture_conn, capture_addr = capture_sock.accept()
 print(f"Connected by {capture_addr} for captured audio.")
+capture_conn.setblocking(False)  # Set to non-blocking
 
 # Socket for received (playback) audio
 playback_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -27,6 +29,7 @@ playback_sock.listen(1)
 print("Waiting for connection from C++ client for playback audio...")
 playback_conn, playback_addr = playback_sock.accept()
 print(f"Connected by {playback_addr} for playback audio.")
+playback_conn.setblocking(False)  # Set to non-blocking
 
 # Set up the plotting figure
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6))
@@ -64,6 +67,12 @@ def update(frame):
             samples_capture = np.frombuffer(capture_data, dtype=np.int16)
             line_capture.set_ydata(samples_capture)
 
+    except socket.error as e:
+        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
+            print(f"Socket error (captured audio): {e}")
+            capture_conn.close()
+
+    try:
         # Receive audio data from the C++ client (playback audio)
         playback_data = playback_conn.recv(BUFFER_SIZE)
         if playback_data:
@@ -71,9 +80,9 @@ def update(frame):
             line_playback.set_ydata(samples_playback)
 
     except socket.error as e:
-        print(f"Socket error: {e}")
-        capture_conn.close()
-        playback_conn.close()
+        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
+            print(f"Socket error (playback audio): {e}")
+            playback_conn.close()
 
     return line_capture, line_playback
 
