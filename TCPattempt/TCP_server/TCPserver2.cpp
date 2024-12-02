@@ -28,7 +28,7 @@
 
 //Define Constants
 #define SRATE 44100     //Sample rate in Hz ; standard for good audio
-#define BUFFSIZE 2048   //Size of buffer for loading audio data
+#define BUFFSIZE 4096   //Size of buffer for loading audio data
 #define PORT "12345"    // TCP port for server
 #define BACKLOG 5       //User connection queue 
 
