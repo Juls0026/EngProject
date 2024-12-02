@@ -26,7 +26,8 @@
 
 //Define global constants 
 #define PORT "12345"   //TCP port 
-#define LOCAL_PORT 65432 //TCP visualization port 
+#define LOCAL_PORT_C 65432 //TCP visualization port 
+#define LOCAL_PORT_P 65433 //TCP playback view
 #define SERVER_IP "192.168.1.83"  //loopback address
 #define BUFFSIZE 1024  //Buffer size
 #define SRATE 44100     //Sample rate in Hz 
@@ -91,7 +92,7 @@ int connect_server(const char* server_ip, const char* port) {
 
 
 //Function to capture audio 
-void audio_cap(int sockfd, int local_sockfd) {
+void audio_cap(int sockfd, int local_sockfd_capture) {
     snd_pcm_t *capture_man;
     snd_pcm_hw_params_t *hw_params;
     int err; 
@@ -137,7 +138,7 @@ void audio_cap(int sockfd, int local_sockfd) {
         }
 
         //Send audio to Python (visualization) 
-        if (send(local_sockfd, buffer, byte_send, 0) == -1) {
+        if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
             perror("Error sending data to Python");
             stop_streaming = true;
             break;
@@ -151,7 +152,7 @@ void audio_cap(int sockfd, int local_sockfd) {
 
 
 //Audio playback function 
-void play_audio(int sockfd) {
+void play_audio(int sockfd, int local_sockfd_playback) {
     snd_pcm_t *playback_man;
     snd_pcm_hw_params_t *hw_params;
     int err; 
@@ -203,6 +204,11 @@ void play_audio(int sockfd) {
             }
         }
 
+        if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
+            perror("Error sending playback to python");
+            break;
+        }
+
     }
 
     snd_pcm_close(playback_man);
@@ -224,31 +230,50 @@ int main() {
         return 1;
     }
 
-
-    int local_sockfd;     //local socket to connect to Python
-    struct sockaddr_in local_addr; 
+    //Audio capture socket
+    int local_sockfd_capture;     //local socket to connect to Python
+    struct sockaddr_in local_addr_capture; 
 
     //Create local socket
-    if((local_sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+    if((local_sockfd_capture = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("Local socket error");
         return 1;
     }
 
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_port = htons(LOCAL_PORT);
-    inet_pton(AF_INET, "127.0.0.1", &local_addr.sin_addr);
+    local_addr_capture.sin_family = AF_INET;
+    local_addr_capture.sin_port = htons(LOCAL_PORT_C);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr_capture.sin_addr);
 
     //Connect to visualizer script 
-    if (connect(local_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
-        perror("Python connection error");
+    if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
+        perror("Python connection error (capt)");
+        return 1;
+    }
+
+     //Audio Playback socket
+    int local_sockfd_playback;     //local socket to connect to Python
+    struct sockaddr_in local_addr_playback; 
+
+    //Create local socket
+    if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Local socket error");
+        return 1;
+    }
+
+    local_addr_playback.sin_family = AF_INET;
+    local_addr_playback.sin_port = htons(LOCAL_PORT_P);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr_playback.sin_addr);
+
+    //Connect to visualizer script 
+    if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
+        perror("Python connection error (capt)");
         return 1;
     }
 
 
-
     //Start capture and playback threads
-    std::thread capture_a(audio_cap, sockfd, local_sockfd);
-    std::thread playback_a(play_audio, sockfd);
+    std::thread capture_a(audio_cap, sockfd, local_sockfd_capture);
+    std::thread playback_a(play_audio, sockfd, local_sockfd_playback);
 
 
    // Join threads before closing socket
