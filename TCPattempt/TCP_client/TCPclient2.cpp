@@ -19,12 +19,16 @@
 #include <netinet/in.h> //address 
 #include <arpa/inet.h>  //IP address convertion
 
+//Audio Libraries 
+#include <alsa/asoundlib.h>
 
 
 //Define global constants 
 #define PORT "12345"   //TCP port 
-#define SERVER_IP "127.0.0.1"  //loopback address
+#define SERVER_IP "192.168.1.83"  //loopback address
 #define BUFFSIZE 2048   //Buffer size
+#define SRATE 44100     //Sample rate in Hz 
+#define Channels 2      //Stereo audio 
 
 
 //Connect to server function 
@@ -82,33 +86,98 @@ int connect_server(const char* server_ip, const char* port) {
 
 
 
-//Send a message to server
-void send_msg(int sockfd, const char* message) {
-    if (send(sockfd,  message, strlen(message), 0) == -1) {
-        perror("send msg error");
+//Function to capture audio 
+void audio_cap(int sockfd) {
+    snd_pcm_t *capture_man;
+    snd_pcm_hw_params_t *hw_params;
+    int err; 
+    char buffer[BUFFSIZE];
+
+
+    //Open ALSA recording 
+    if ((err = snd_pcm_open(&capture_man, "default", SND_PCM_STREAM_CAPTURE, 0)) < 0) {
+        std::cerr << "capture device error" << snd_strerror(err) << "\n";
+        return;
 
     }
+
+
+    snd_pcm_hw_params_alloca(&hw_params);
+    snd_pcm_hw_params_any(capture_man, hw_params);
+    snd_pcm_hw_params_set_access(capture_man, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    snd_pcm_hw_params_set_format(capture_man, hw_params, SND_PCM_FORMAT_S16_LE);
+    snd_pcm_hw_params_set_rate(capture_man, hw_params, SRATE, 0);
+    snd_pcm_hw_params_set_channels(capture_man, hw_params, Channels);
+    snd_pcm_hw_params(capture_man, hw_params); 
+
+
+
+
+
+    //Start audio capture
+    while(true) {
+        if ((err = snd_pcm_readi(capture_man, buffer, BUFFSIZE / 2)) < 0) {
+            std::cerr << "audio capture error" << snd_strerror(err) << "\n";
+
+        } else {
+            if(send(sockfd, buffer, BUFFSIZE, 0) == -1) {
+                perror("transmission error");
+
+            }
+        }
+    }
+
+    snd_pcm_close(capture_man);
 
 }
 
 
-//Receive message from server
-void receive_msg(int sockfd){
+
+//Audio playback function 
+void play_audio(int sockfd) {
+    snd_pcm_t *playback_man;
+    snd_pcm_hw_params_t *hw_params;
+    int err; 
     char buffer[BUFFSIZE];
-    int byte_num; 
 
-    while ((byte_num = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[byte_num] = '\0'; //stop receiving data 
-        std::cout << "Server: " << buffer << "\n"; 
+
+    //Open playback device
+    if((err = snd_pcm_open(&playback_man, "default", SND_PCM_STREAM_PLAYBACK, 0)) < 0) {
+        std::cerr << "playback device error" << snd_strerror(err) << "\n";
+        return; 
 
     }
 
-    if(byte_num == -1) {
-           perror("recv error");
-    } else if (byte_num == 0) {
-        std::cout << "Server closed the connection.\n";
+    snd_pcm_hw_params_alloca(&hw_params);
+    snd_pcm_hw_params_any(playback_man, hw_params);
+    snd_pcm_hw_params_set_access(playback_man, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    snd_pcm_hw_params_set_format(playback_man, hw_params, SND_PCM_FORMAT_S16_LE);
+    snd_pcm_hw_params_set_rate(playback_man, hw_params, SRATE, 0);
+    snd_pcm_hw_params_set_channels(playback_man, hw_params, Channels);
+    snd_pcm_hw_params(playback_man, hw_params); 
+
+
+
+    //play audio 
+    while(true) {
+        int byte_num = recv(sockfd, buffer, sizeof(buffer), 0);
+        if (byte_num <= 0) {
+            if (byte_num == 0) {
+                std::cout << "Server closed connection. \n";
+            } else {
+                perror("recv error");
+            }
+
+            break;
+        }
+
+        if ((err = snd_pcm_writei(playback_man, buffer, BUFFSIZE / 2)) < 0) {
+            std::cerr << "write to audio failed" << snd_strerror(err) << "\n";
+
+        }
     }
-    
+
+    snd_pcm_close(playback_man);
 }
 
 
@@ -121,26 +190,14 @@ int main() {
 
     }
 
-
-    //Message send to server
-    const char* send_hello = "HELLO"; 
-    send_msg(sockfd, send_hello); 
-
-
-    //Receive messages from server
-    std::thread receive_data(receive_msg, sockfd); 
-    receive_data.detach(); //Thread runs independently
+    //Start capture and playback threads
+    std::thread capture(audio_cap, sockfd);
+    std::thread playback(play_audio, sockfd);
 
 
-    // Sending messages in a loop (You can customize this)
-    std::string message;
-    while (true) {
-        std::getline(std::cin, message);  // Get user input
-        if (message == "/quit") {         // Allow the client to quit gracefully
-            break;
-        }
-        send_msg(sockfd, message.c_str());
-    }
+    // Join thread
+    capture.join();
+    playback.join();
 
     // Close the socket and clean up
     close(sockfd);

@@ -22,6 +22,8 @@
 #include <netinet/in.h>    // Internet address family constants and structures (e.g., sockaddr_in, IP protocols)
 #include <netdb.h>         // Network database operations (e.g., gethostbyname, getaddrinfo)
 
+//Audio Library 
+#include <alsa/asoundlib.h>  //Audio capture and playback 
 
 
 //Define Constants
@@ -42,13 +44,10 @@ void handle_c(int client_socket) {
     int byte_num;
 
 
-    while ((byte_num = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) >0) {
-    
-        buffer[byte_num] = '\0'; //Terminate received data 
-    
-    
+    while ((byte_num = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
+        
         //Broadcast message to all clients
-        std::lock_guard<std::mutex> lock(client_m); 
+        std::lock_guard<std::mutex> lock(client_m);       //Lock clients while broadcasting
         for (int others_addr : clients) {
             if (others_addr != client_socket) {
                 if (send(others_addr, buffer, byte_num, 0) == -1) {
@@ -91,15 +90,16 @@ void sigchld_handler(int s) {
     }
 }
 
-// Utility to get socket address
+//Utility to get socket address
 void *get_addr(struct sockaddr *sa) {
     if (sa->sa_family == AF_INET) {
         return &(((struct sockaddr_in*)sa)->sin_addr);
-    } else if (sa->sa_family == AF_INET6) {
-        return &(((struct sockaddr_in6*)sa)->sin6_addr);
     }
-    return nullptr;  // Handle unexpected cases
+    return &(((struct sockaddr_in6*)sa)->sin6_addr);
+    
 }
+
+
 
 
 int main() {
@@ -123,7 +123,7 @@ int main() {
 
 
     //Get address information
-    if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
+    if ((rv = getaddrinfo("192.168.1.83", PORT, &hints, &servinfo)) != 0) {
         std::cerr << "Address info error." << gai_strerror(rv) << "\n";
         return 1; 
     } 
@@ -134,7 +134,7 @@ int main() {
         //Setup socket 
         if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
             perror("socket error");
-            return 1; 
+            continue; 
 
         }
 
@@ -196,8 +196,8 @@ int main() {
         }
 
         // Convert the client address to a human-readable format
-         inet_ntop(client_addr.ss_family, &(((struct sockaddr_in *)&client_addr)->sin_addr), s, sizeof s);
-        std::cout << "server: got connection from " << s << "\n";
+        inet_ntop(client_addr.ss_family, get_addr((struct sockaddr *)&client_addr), s, sizeof s);
+        std::cout << "Server: got connection from " << s << "\n";
 
         // Add new client to the list
         {
