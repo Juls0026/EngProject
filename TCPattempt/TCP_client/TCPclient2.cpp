@@ -6,6 +6,7 @@
 #include <vector>    //Dynamic array 
 #include <thread>    //Multi-thread
 #include <mutex>     //Thread safety variables
+#include <atomic>
 
 
 //POSIX libraries 
@@ -25,10 +26,14 @@
 
 //Define global constants 
 #define PORT "12345"   //TCP port 
+#define LOCAL_PORT 65432 //TCP visualization port 
 #define SERVER_IP "192.168.1.83"  //loopback address
 #define BUFFSIZE 1024  //Buffer size
 #define SRATE 44100     //Sample rate in Hz 
 #define Channels 2      //Stereo audio 
+
+
+std::atomic<bool> stop_streaming(false);
 
 //Connect to server function 
 int connect_server(const char* server_ip, const char* port) {
@@ -86,7 +91,7 @@ int connect_server(const char* server_ip, const char* port) {
 
 
 //Function to capture audio 
-void audio_cap(int sockfd) {
+void audio_cap(int sockfd, int local_sockfd) {
     snd_pcm_t *capture_man;
     snd_pcm_hw_params_t *hw_params;
     int err; 
@@ -128,6 +133,13 @@ void audio_cap(int sockfd) {
         int byte_send = fr_capture * 2 * Channels; //Calculate bytes sent
         if (send(sockfd, buffer, byte_send, 0) == -1) {
             perror("error sending");
+            break;
+        }
+
+        //Send audio to Python (visualization) 
+        if (send(local_sockfd, buffer, byte_send, 0) == -1) {
+            perror("Error sending data to Python");
+            stop_streaming = true;
             break;
         }
     }    
@@ -213,8 +225,29 @@ int main() {
     }
 
 
+    int local_sockfd;     //local socket to connect to Python
+    struct sockaddr_in local_addr; 
+
+    //Create local socket
+    if((local_sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Local socket error");
+        return 1;
+    }
+
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(LOCAL_PORT);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr.sin_addr);
+
+    //Connect to visualizer script 
+    if (connect(local_sockfd, (struct sockaddr *)&local_addr, sizeof(local_addr)) == -1) {
+        perror("Python connection error");
+        return 1;
+    }
+
+
+
     //Start capture and playback threads
-    std::thread capture_a(audio_cap, sockfd);
+    std::thread capture_a(audio_cap, sockfd, local_sockfd);
     std::thread playback_a(play_audio, sockfd);
 
 
