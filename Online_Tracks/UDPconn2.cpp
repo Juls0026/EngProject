@@ -5,6 +5,7 @@
  #include <vector>    //Dynamic array 
  #include <thread>    //multithreading
  #include <mutex>     //thread safe variables
+ #include <condition_variable>
  #include <algorithm> //search algorithm 
  #include <atomic>    //boolean controñl 
  #include <stdlib.h>  //Standard functions (exit) 
@@ -28,8 +29,8 @@
 
 
  //Initialize global constants 
- #define PORT1 54321   //Port for client a 
- #define PORT2 12345   //Port for client b 
+ #define PORT1 54321  //Port for client a 
+ #define PORT2 12345  //Port for client b 
  #define BUFFSIZE 1024 
  #define CLIENT1_IP "192.168.1.85"
  #define CLIENT2_IP "192.168.1.83"
@@ -38,9 +39,14 @@
 
 
 std::atomic<bool> stop_streaming(false);
+std::condition_variable stop_condition; 
+std::mutex fn_mute;
 
 void init_sig(int sig) {
-    stop_streaming = true; 
+    if (signal == SIGINT) {
+        stop_streaming = true; 
+        stop_condition.notify_all();
+    }
 }
 
 //Audio capture function
@@ -161,6 +167,9 @@ void play_audio(int sockfd) {
 
 int main() {
     
+    signal(SIGINT, init_sig);
+
+
     //Initialize socket 
     int sockfd; 
     struct sockaddr_in local_addr, remote_addr;
@@ -198,16 +207,26 @@ int main() {
         exit(1);
     }
 
-    signal(SIGINT, init_sig);
-
+    
     //Start threads and join them
     std::thread capture_th(audio_cap, sockfd, remote_addr);
     std::thread playback_th(play_audio, sockfd);
 
-    capture_th.join();
-    playback_th.join();
+   {
+    std::unique_lock<std::mutex> lock(fn_mute);
+    stop_condition.wait(lock, [] { return stop_streaming.load(); });
+   }
 
 
+    //Join threads
+    if (capture_th.joinable()) {
+        capture_th.join();
+    }
+    if (playback_th.joinable()) {
+        playback_th.join();
+    }
+
+    
     close(sockfd);
     return 0; 
 
