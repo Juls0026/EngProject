@@ -87,7 +87,7 @@ def update(frame):
     return line_capture, line_playback
 
 # Set up the animation
-ani = FuncAnimation(fig, update, blit=True, interval=50)
+ani = FuncAnimation(fig, update, blit=True, interval=50, cache_frame_data=False)
 plt.tight_layout()
 plt.show()
 
