@@ -29,21 +29,23 @@
 
 
  //Initialize global constants 
- #define PORT1 12345   //Port for client a 
- #define PORT2 54321   //Port for client b 
+ #define PORT1 12345  //Port for client a 
+ #define PORT2 54321  //Port for client b 
  #define BUFFSIZE 1024 
  #define CLIENT1_IP "192.168.1.83"
  #define CLIENT2_IP "192.168.1.85"
  #define SRATE 44100 
  #define Channels 2 
-
+ 
+ #define LOCAL_PORT_C 65432 //TCP visualization port 
+ #define LOCAL_PORT_P 65433 //TCP playback view
 
 std::atomic<bool> stop_streaming(false);
 std::condition_variable stop_condition; 
 std::mutex fn_mute;
 
 void init_sig(int sig) {
-    if (signal == SIGINT) {
+    if (sig == SIGINT) {
         stop_streaming = true; 
         stop_condition.notify_all();
     }
@@ -51,7 +53,7 @@ void init_sig(int sig) {
 
 //Audio capture function
 
-void audio_cap(int sockfd, struct sockaddr_in remote_addr) {
+void audio_cap(int sockfd, struct sockaddr_in remote_addr, int local_sockfd_capture) {
     snd_pcm_t *capture_man;
     snd_pcm_hw_params_t *hw_params;
     int err; 
@@ -95,14 +97,28 @@ void audio_cap(int sockfd, struct sockaddr_in remote_addr) {
             break;
         }
 
+        //Send audio to Python (visualization) + Check broken pipe
+        if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
+            if (errno == EPIPE) {
+                std::cerr <<"Visualizer disconnected - Broken pipe.\n";
+            } else {
+                perror("Error sending data to Python");
+
+            }
+            stop_streaming = true;
+            break;
+        }
+
     }    
 
     snd_pcm_close(capture_man);
+    close(local_sockfd_capture);
+
 
 }
 
 //Audio playback function 
-void play_audio(int sockfd) {
+void play_audio(int sockfd,  int local_sockfd_playback) {
     snd_pcm_t *playback_man;
     snd_pcm_hw_params_t *hw_params;
     int err; 
@@ -158,9 +174,23 @@ void play_audio(int sockfd) {
                 break;
             }
         }
+
+
+        //Python visualizer send
+        if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
+            if (errno == EPIPE) {
+                std::cerr << "Python visualizer disconnected. Playback pipe";
+            } else {
+                perror("Error sending playback to python");
+            }
+            stop_streaming = true;
+            break;
+        }
+
     }
 
     snd_pcm_close(playback_man); 
+    close(local_sockfd_playback);
 }
 
 
@@ -207,10 +237,60 @@ int main() {
         exit(1);
     }
 
+     //Check socket 
+    if (sockfd < 0) {
+        std::cerr << "Socket creation error. \n";
+        return 1;
+    }
+
+    //Audio capture socket
+    int local_sockfd_capture;     //local socket to connect to Python
+    struct sockaddr_in local_addr_capture; 
+
+    //Create local socket
+    if((local_sockfd_capture = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Local socket error");
+        return 1;
+    }
+
+    local_addr_capture.sin_family = AF_INET;
+    local_addr_capture.sin_port = htons(LOCAL_PORT_C);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr_capture.sin_addr);
+
+    //Connect to visualizer script 
+    if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
+        perror("Python connection error (capt)");
+        return 1;
+    }
+
+    std::cout << "Python View connection successful.\n";
+
+     //Audio Playback socket
+    int local_sockfd_playback;     //local socket to connect to Python
+    struct sockaddr_in local_addr_playback; 
+
+    //Create local socket
+    if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Local socket error");
+        return 1;
+    }
+
+    local_addr_playback.sin_family = AF_INET;
+    local_addr_playback.sin_port = htons(LOCAL_PORT_P);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr_playback.sin_addr);
+
+    //Connect to visualizer script 
+    if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
+        perror("Python connection error (play)");
+        return 1;
+    }
+
+    std::cout << "Python playback view successful.\n";
+
     
     //Start threads and join them
-    std::thread capture_th(audio_cap, sockfd, remote_addr);
-    std::thread playback_th(play_audio, sockfd);
+    std::thread capture_th(audio_cap, sockfd, remote_addr, local_sockfd_capture);
+    std::thread playback_th(play_audio, sockfd, local_sockfd_playback);
 
    {
     std::unique_lock<std::mutex> lock(fn_mute);
