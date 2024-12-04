@@ -9,7 +9,7 @@
 #include <atomic>
 
 #include <signal.h> 
-
+#include <chrono>  //Add timestamps for measurements
 
 //POSIX libraries 
 #include <unistd.h>  //System calls
@@ -99,6 +99,7 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
     snd_pcm_hw_params_t *hw_params;
     int err; 
     char buffer[BUFFSIZE * 2 * Channels];
+    int64_t timestamp; 
 
 
     //Open ALSA recording 
@@ -132,6 +133,11 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
             }
         }
 
+         // Get the current timestamp in milliseconds
+        timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()
+                    ).count();
+
         //Send audio on socket 
         int byte_send = fr_capture * 2 * Channels; //Calculate bytes sent
         if (send(sockfd, buffer, byte_send, 0) == -1) {
@@ -140,21 +146,26 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
             break;
         }
 
-        //Send audio to Python (visualization) + Check broken pipe
-        if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
-            if (errno == EPIPE) {
-                std::cerr <<"Visualizer disconnected - Broken pipe.\n";
-            } else {
-                perror("Error sending data to Python");
+         // Combine timestamp and buffer into one packet
+        std::vector<char> packet(sizeof(timestamp) + byte_send);
 
-            }
+        // Copy timestamp into packet
+        memcpy(packet.data(), &timestamp, sizeof(timestamp));
+
+        // Copy audio buffer into packet
+        memcpy(packet.data() + sizeof(timestamp), buffer, byte_send);
+
+        // Send the combined packet to Python visualizer
+        if (send(local_sockfd_capture, packet.data(), packet.size(), 0) == -1) {
+            perror("Error sending data to Python (timestamp + audio)");
             stop_streaming = true;
             break;
         }
     }    
 
     snd_pcm_close(capture_man);
-    close(local_sockfd_capture);
+    close(sockfd);           // Close main server socket
+    close(local_sockfd_capture);  // Close local socket properly
 
 }
 
