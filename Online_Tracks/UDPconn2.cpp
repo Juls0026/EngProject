@@ -29,11 +29,11 @@
 
 
  //Initialize global constants 
- #define PORT1 54321  //Port for client a 
- #define PORT2 12345  //Port for client b 
+ #define PORT1 12345  //Port for client a 
+ #define PORT2 54321  //Port for client b 
  #define BUFFSIZE 1024 
- #define CLIENT1_IP "192.168.1.85"
- #define CLIENT2_IP "192.168.1.83"
+ #define CLIENT1_IP "192.168.1.83"
+ #define CLIENT2_IP "192.168.1.85"
  #define SRATE 44100 
  #define Channels 2 
  
@@ -97,17 +97,17 @@ void audio_cap(int sockfd, struct sockaddr_in remote_addr, int local_sockfd_capt
             break;
         }
 
-        //Send audio to Python (visualization) + Check broken pipe
-        if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
-            if (errno == EPIPE) {
-                std::cerr <<"Visualizer disconnected - Broken pipe.\n";
-            } else {
-                perror("Error sending data to Python");
+        ////Send audio to Python (visualization) + Check broken pipe
+        //if (send(local_sockfd_capture, buffer, byte_send, 0) == -1) {
+          //  if (errno == EPIPE) {
+            //    std::cerr <<"Visualizer disconnected - Broken pipe.\n";
+            //} else {
+              //  perror("Error sending data to Python");
 
-            }
-            stop_streaming = true;
-            break;
-        }
+            //}
+           // stop_streaming = true;
+            //break;
+        //}
 
     }    
 
@@ -177,15 +177,15 @@ void play_audio(int sockfd,  int local_sockfd_playback) {
 
 
         //Python visualizer send
-        if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
-            if (errno == EPIPE) {
-                std::cerr << "Python visualizer disconnected. Playback pipe";
-            } else {
-                perror("Error sending playback to python");
-            }
-            stop_streaming = true;
-            break;
-        }
+        //if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
+          //  if (errno == EPIPE) {
+            //    std::cerr << "Python visualizer disconnected. Playback pipe";
+            //} else {
+              //  perror("Error sending playback to python");
+           // }
+            //stop_streaming = true;
+            //break;
+        //}
 
     }
 
@@ -248,44 +248,44 @@ int main() {
     struct sockaddr_in local_addr_capture; 
 
     //Create local socket
-    if((local_sockfd_capture = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("Local socket error");
-        return 1;
-    }
+    //if((local_sockfd_capture = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+      //  perror("Local socket error");
+        //return 1;
+    //}
 
-    local_addr_capture.sin_family = AF_INET;
-    local_addr_capture.sin_port = htons(LOCAL_PORT_C);
-    inet_pton(AF_INET, "127.0.0.1", &local_addr_capture.sin_addr);
+    //local_addr_capture.sin_family = AF_INET;
+    //local_addr_capture.sin_port = htons(LOCAL_PORT_C);
+    //inet_pton(AF_INET, "127.0.0.1", &local_addr_capture.sin_addr);
 
     //Connect to visualizer script 
-    if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
-        perror("Python connection error (capt)");
-        return 1;
-    }
+    //if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
+      //  perror("Python connection error (capt)");
+        //return 1;
+    //}
 
-    std::cout << "Python View connection successful.\n";
+    //std::cout << "Python View connection successful.\n";
 
      //Audio Playback socket
     int local_sockfd_playback;     //local socket to connect to Python
     struct sockaddr_in local_addr_playback; 
 
     //Create local socket
-    if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("Local socket error");
-        return 1;
-    }
+    //if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        //perror("Local socket error");
+        //return 1;
+    //}
 
-    local_addr_playback.sin_family = AF_INET;
-    local_addr_playback.sin_port = htons(LOCAL_PORT_P);
-    inet_pton(AF_INET, "127.0.0.1", &local_addr_playback.sin_addr);
+    //local_addr_playback.sin_family = AF_INET;
+    //local_addr_playback.sin_port = htons(LOCAL_PORT_P);
+    //inet_pton(AF_INET, "127.0.0.1", &local_addr_playback.sin_addr);
 
     //Connect to visualizer script 
-    if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
-        perror("Python connection error (play)");
-        return 1;
-    }
+    //if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
+      //  perror("Python connection error (play)");
+        //return 1;
+    //}
 
-    std::cout << "Python playback view successful.\n";
+    //std::cout << "Python playback view successful.\n";
 
     
     //Start threads and join them
