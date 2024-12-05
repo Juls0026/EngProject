@@ -5,7 +5,7 @@ import errno
 import signal
 
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('TkAgg') 
 from matplotlib import pyplot as plt
 
 # Define constants
