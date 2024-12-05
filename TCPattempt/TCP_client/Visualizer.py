@@ -1,132 +1,92 @@
 import socket
-import numpy as np
+import time
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+import numpy as np
 import errno
-import time  # For getting the current timestamp
+import signal
 
 # Define constants
-HOST = '127.0.0.1'           # Localhost
-CAPTURE_PORT = 65432         # Port to listen for captured audio (must match the C++ client)
-PLAYBACK_PORT = 65433        # Port to listen for received (playback) audio
-BUFFER_SIZE = 4096           # Buffer size to receive data
-SRATE = 44100                # Sample rate
-CHANNELS = 2                 # Stereo audio
+LOCAL_PORT = 65432
+BUFFER_SIZE = 4096
+MAX_LATENCY_POINTS = 1000  # Maximum number of latency checkpoints before auto-termination
 
-# Set up the sockets for receiving audio data
-# Socket for captured audio
-capture_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-capture_sock.bind((HOST, CAPTURE_PORT))
-capture_sock.listen(1)
-print("Waiting for connection from C++ client for captured audio...")
-capture_conn, capture_addr = capture_sock.accept()
-print(f"Connected by {capture_addr} for captured audio.")
-capture_conn.setblocking(False)  # Set to non-blocking
+# Set up the socket for incoming connections
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server_socket.bind(("127.0.0.1", LOCAL_PORT))
+server_socket.listen(1)
 
-# Socket for received (playback) audio
-playback_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-playback_sock.bind((HOST, PLAYBACK_PORT))
-playback_sock.listen(1)
-print("Waiting for connection from C++ client for playback audio...")
-playback_conn, playback_addr = playback_sock.accept()
-print(f"Connected by {playback_addr} for playback audio.")
-playback_conn.setblocking(False)  # Set to non-blocking
+print(f"Listening for connections on port {LOCAL_PORT}...")
 
-# Set up the plotting figure for real-time waveform visualization
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6))
+# Accept a connection from the C++ client
+conn, addr = server_socket.accept()
+print(f"Connected by {addr}")
 
-# Set up x data for both subplots
-x_data = np.linspace(0, BUFFER_SIZE // CHANNELS, BUFFER_SIZE // CHANNELS)
-y_data_capture = np.zeros(BUFFER_SIZE // CHANNELS)
-y_data_playback = np.zeros(BUFFER_SIZE // CHANNELS)
-
-# Set up lines for both subplots
-line_capture, = ax1.plot(x_data, y_data_capture, color='blue')
-line_playback, = ax2.plot(x_data, y_data_playback, color='green')
-
-# Configure subplot 1: Captured Audio
-ax1.set_ylim(-32768, 32767)  # 16-bit audio range
-ax1.set_xlim(0, BUFFER_SIZE // CHANNELS)
-ax1.set_title("Real-Time Captured Audio Waveform")
-ax1.set_xlabel("Sample Index")
-ax1.set_ylabel("Amplitude")
-
-# Configure subplot 2: Playback Audio
-ax2.set_ylim(-32768, 32767)  # 16-bit audio range
-ax2.set_xlim(0, BUFFER_SIZE // CHANNELS)
-ax2.set_title("Real-Time Playback Audio Waveform")
-ax2.set_xlabel("Sample Index")
-ax2.set_ylabel("Amplitude")
-
-# List to store latency values
+# To store latency values
 latency_values = []
 
-# Function to update the visualization
-def update(frame):
-    global capture_conn, playback_conn
-    try:
+# Variable to handle streaming status
+stop_streaming = False
+
+def signal_handler(sig, frame):
+    """Handles the Ctrl+C to stop the program gracefully"""
+    global stop_streaming
+    print("\nCtrl+C pressed. Stopping the streaming gracefully...")
+    stop_streaming = True
+
+# Register the signal handler for SIGINT (Ctrl+C)
+signal.signal(signal.SIGINT, signal_handler)
+
+try:
+    while not stop_streaming:
         # Receive combined data (timestamp + audio data)
-        combined_data = capture_conn.recv(BUFFER_SIZE + 8)  # 8 bytes for timestamp + audio buffer
+        combined_data = conn.recv(BUFFER_SIZE + 8)
 
-        if combined_data:
-            # Extract timestamp
-            timestamp = int.from_bytes(combined_data[:8], byteorder='little')
-            current_timestamp = int(time.time() * 1000)  # Current time in milliseconds
-            latency = current_timestamp - timestamp
-            latency_values.append(latency)  # Record latency
-            print(f"Captured audio latency: {latency} ms")
+        # Check if enough data is received (at least 8 bytes for timestamp)
+        if len(combined_data) < 8:
+            # If no data received, skip and continue waiting
+            if len(combined_data) == 0:
+                continue
+            else:
+                print("Received incomplete packet; ignoring.")
+                continue
 
-            # Extract audio data
-            audio_data = combined_data[8:]
-            samples_capture = np.frombuffer(audio_data, dtype=np.int16)
-            line_capture.set_ydata(samples_capture)
+        # Extract the timestamp (first 8 bytes)
+        timestamp = int.from_bytes(combined_data[:8], byteorder='little')
 
-    except socket.error as e:
-        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
-            print(f"Socket error (captured audio): {e}")
-            capture_conn.close()
+        # Current time in milliseconds
+        current_timestamp = int(time.time() * 1000)
 
-    try:
-        # Receive audio data from the C++ client (playback audio)
-        playback_data = playback_conn.recv(BUFFER_SIZE)
-        if playback_data:
-            samples_playback = np.frombuffer(playback_data, dtype=np.int16)
-            line_playback.set_ydata(samples_playback)
-            print("Received playback audio data")  # Debugging output
+        # Calculate latency
+        latency = current_timestamp - timestamp
+        latency_values.append(latency)
 
-    except socket.error as e:
-        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
-            print(f"Socket error (playback audio): {e}")
-            playback_conn.close()
+        # Debugging output every 10 samples
+        if len(latency_values) % 10 == 0:
+            print(f"Latency recorded: {latency} ms")
 
-    return line_capture, line_playback
+        # If we reach the maximum number of latency points, stop streaming
+        if len(latency_values) >= MAX_LATENCY_POINTS:
+            print(f"Reached maximum latency checkpoints of {MAX_LATENCY_POINTS}.")
+            stop_streaming = True
 
+except socket.error as e:
+    if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
+        print(f"Socket error: {e}")
 
-# Set up the animation
-ani = FuncAnimation(fig, update, blit=True, interval=50)
-plt.tight_layout()
+# Close the connection once the streaming ends
+conn.close()
+server_socket.close()
+print("Connection closed. Plotting latency data...")
+
+# Plot the latency values collected during the streaming session
+plt.figure(figsize=(10, 5))
+plt.plot(latency_values, color='b', label='Latency (ms)')
+plt.xlabel('Sample Index')
+plt.ylabel('Latency (ms)')
+plt.title('Latency Over Time During Audio Streaming')
+plt.grid(True)
+plt.legend()
+
+# Show the latency plot
 plt.show()
-
-# Close the connection after visualization ends
-capture_conn.close()
-playback_conn.close()
-capture_sock.close()
-playback_sock.close()
-
-# Plot the latency graph after the connection ends
-if latency_values:
-    plt.figure(figsize=(10, 5))
-    plt.plot(latency_values, color='red', label='Latency (ms)')
-    plt.xlabel('Frame')
-    plt.ylabel('Latency (ms)')
-    plt.title('Streaming Latency Over Time')
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-    # Optionally save the latency data to a file for further analysis
-    with open("latency_data.txt", "w") as f:
-        for latency in latency_values:
-            f.write(f"{latency}\n")
-
-    print("Latency data saved to latency_data.txt")
