@@ -16,7 +16,7 @@ server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server_socket.bind(("127.0.0.1", LOCAL_PORT))
 server_socket.listen(1)
 
-print(f"Listening for connections on port {LOCAL_PORT}...")
+print(f"Listening for connections on port {LOCAL_PORT}...")  # Make sure this message appears before starting the C++ client
 
 # Accept a connection from the C++ client
 conn, addr = server_socket.accept()
