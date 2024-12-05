@@ -10,49 +10,55 @@ LOCAL_PORT = 65432
 BUFFER_SIZE = 4096
 MAX_LATENCY_POINTS = 1000  # Maximum number of latency checkpoints before auto-termination
 
-# Set up the socket for incoming connections
+
+#store variables 
+latency_values = []
+bandwidth_values = []
+timestamps = []
+
+
+stop_streaming = False #help close program gracefully 
+
+def signal_man(sig, frame): 
+    """stop programm gracefully"""
+    global stop_streaming
+    print("\nCtrl+C stop streaming")
+    stop_streaming = True
+
+#Register signal 
+signal.signal(signal.SIGINT, signal_man)
+
+#Local socket comms setup 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server_socket.bind(("127.0.0.1", LOCAL_PORT))
 server_socket.listen(1)
 
-print(f"Listening for connections on port {LOCAL_PORT}...")  # Make sure this message appears before starting the C++ client
+print(f"Listening")
 
-# Accept a connection from the C++ client
+#Accept connection 
 conn, addr = server_socket.accept()
 print(f"Connected by {addr}")
 
-# To store latency values
-latency_values = []
 
-# Variable to handle streaming status
-stop_streaming = False
-
-def signal_handler(sig, frame):
-    """Handles the Ctrl+C to stop the program gracefully"""
-    global stop_streaming
-    print("\nCtrl+C pressed. Stopping the streaming gracefully...")
-    stop_streaming = True
-
-# Register the signal handler for SIGINT (Ctrl+C)
-signal.signal(signal.SIGINT, signal_handler)
+start_time = time.time() #Start time of transmission 
 
 try:
     while not stop_streaming:
         # Receive combined data (timestamp + audio data)
-        combined_data = conn.recv(BUFFER_SIZE + 8)
+        combined_data = conn.recv(BUFFER_SIZE)
 
         # Check if enough data is received (at least 8 bytes for timestamp)
         if len(combined_data) < 8:
-            # If no data received, skip and continue waiting
+            # If no data received, assume the client has closed the connection
             if len(combined_data) == 0:
-                continue
+                break
             else:
                 print("Received incomplete packet; ignoring.")
                 continue
 
-        # Extract the timestamp (first 8 bytes)
-        timestamp = int.from_bytes(combined_data[:8], byteorder='little')
+        # Extract the timestamp (first 8 bytes, assuming little-endian format)
+        timestamp = struct.unpack('<q', combined_data[:8])[0]
 
         # Current time in milliseconds
         current_timestamp = int(time.time() * 1000)
@@ -61,32 +67,51 @@ try:
         latency = current_timestamp - timestamp
         latency_values.append(latency)
 
+        # Calculate the amount of data received in bytes (excluding the timestamp)
+        data_size = len(combined_data) - 8
+
+        # Calculate the time elapsed since start
+        elapsed_time = time.time() - start_time
+        timestamps.append(elapsed_time)
+
+        # Calculate bandwidth in bytes per second
+        if elapsed_time > 0:
+            bandwidth = data_size / elapsed_time
+            bandwidth_values.append(bandwidth)
+
         # Debugging output every 10 samples
         if len(latency_values) % 10 == 0:
-            print(f"Latency recorded: {latency} ms")
-
-        # If we reach the maximum number of latency points, stop streaming
-        if len(latency_values) >= MAX_LATENCY_POINTS:
-            print(f"Reached maximum latency checkpoints of {MAX_LATENCY_POINTS}.")
-            stop_streaming = True
+            print(f"Latency recorded: {latency} ms, Bandwidth: {bandwidth:.2f} Bps")
 
 except socket.error as e:
-    if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
-        print(f"Socket error: {e}")
+    print(f"Socket error: {e}")
 
 # Close the connection once the streaming ends
 conn.close()
 server_socket.close()
-print("Connection closed. Plotting latency data...")
+print("Connection closed. Plotting latency and bandwidth data...")
 
 # Plot the latency values collected during the streaming session
-plt.figure(figsize=(10, 5))
-plt.plot(latency_values, color='b', label='Latency (ms)')
-plt.xlabel('Sample Index')
+plt.figure(figsize=(12, 6))
+
+# Plot latency
+plt.subplot(2, 1, 1)
+plt.plot(timestamps, latency_values, color='b', label='Latency (ms)')
+plt.xlabel('Time (s)')
 plt.ylabel('Latency (ms)')
 plt.title('Latency Over Time During Audio Streaming')
 plt.grid(True)
 plt.legend()
 
-# Show the latency plot
+# Plot bandwidth
+plt.subplot(2, 1, 2)
+plt.plot(timestamps, bandwidth_values, color='g', label='Bandwidth (Bps)')
+plt.xlabel('Time (s)')
+plt.ylabel('Bandwidth (Bytes per Second)')
+plt.title('Bandwidth Over Time During Audio Streaming')
+plt.grid(True)
+plt.legend()
+
+# Show the latency and bandwidth plot
+plt.tight_layout()
 plt.show()

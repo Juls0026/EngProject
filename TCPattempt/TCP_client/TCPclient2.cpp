@@ -146,21 +146,21 @@ void audio_cap(int sockfd, int local_sockfd_capture) {
             break;
         }
 
-         // Combine timestamp and buffer into one packet
-        //std::vector<char> packet(sizeof(timestamp) + byte_send);
+        //Combine timestamp and buffer into one packet
+        std::vector<char> packet(sizeof(timestamp) + byte_send);
 
         // Copy timestamp into packet
-        //memcpy(packet.data(), &timestamp, sizeof(timestamp));
+        memcpy(packet.data(), &timestamp, sizeof(timestamp));
 
         // Copy audio buffer into packet
-        //memcpy(packet.data() + sizeof(timestamp), buffer, byte_send);
+        memcpy(packet.data() + sizeof(timestamp), buffer, byte_send);
 
         // Send the combined packet to Python visualizer
-        //if (send(local_sockfd_capture, packet.data(), packet.size(), 0) == -1) {
-           // perror("Error sending data to Python (timestamp + audio)");
-            //stop_streaming = true;
-            //break;
-        //}
+        if (send(local_sockfd_capture, packet.data(), packet.size(), 0) == -1) {
+            perror("Error sending data to Python (timestamp + audio)");
+            stop_streaming = true;
+            break;
+        }
     }    
 
     snd_pcm_close(capture_man);
@@ -228,15 +228,15 @@ void play_audio(int sockfd, int local_sockfd_playback) {
         }
 
         //Python visualizer send
-        //if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
-          //  if (errno == EPIPE) {
-            //    std::cerr << "Python visualizer disconnected. Playback pipe";
-           // } else {
-             //   perror("Error sending playback to python");
-           // }
-           // stop_streaming = true;
-           // break;
-      //  }
+        if (send(local_sockfd_playback, buffer, byte_num, 0) == -1) {
+            if (errno == EPIPE) {
+                std::cerr << "Python visualizer disconnected. Playback pipe";
+            } else {
+                perror("Error sending playback to python");
+            }
+            stop_streaming = true;
+            break;
+        }
 
     }
 
@@ -278,34 +278,34 @@ int main() {
     inet_pton(AF_INET, "127.0.0.1", &local_addr_capture.sin_addr);
 
     //Connect to visualizer script 
-    //if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
-      //  perror("Python connection error (capt)");
-        //return 1;
-   // }
+    if (connect(local_sockfd_capture, (struct sockaddr *)&local_addr_capture, sizeof(local_addr_capture)) == -1) {
+        perror("Python connection error (capt)");
+        return 1;
+    }
 
-    //std::cout << "Python View connection successful.\n";
+    std::cout << "Python View connection successful.\n";
 
      //Audio Playback socket
     int local_sockfd_playback;     //local socket to connect to Python
     struct sockaddr_in local_addr_playback; 
 
     //Create local socket
-   // if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-     //   perror("Local socket error");
-       // return 1;
-   // }
+   if((local_sockfd_playback = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("Local socket error");
+        return 1;
+    }
 
     local_addr_playback.sin_family = AF_INET;
     local_addr_playback.sin_port = htons(LOCAL_PORT_P);
     inet_pton(AF_INET, "127.0.0.1", &local_addr_playback.sin_addr);
 
     //Connect to visualizer script 
-   // if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
-     //   perror("Python connection error (play)");
-       // return 1;
-    //}
+    if (connect(local_sockfd_playback, (struct sockaddr *)&local_addr_playback, sizeof(local_addr_playback)) == -1) {
+        perror("Python connection error (play)");
+        return 1;
+    }
 
-    //std::cout << "Python playback view successful.\n";
+    std::cout << "Python playback view successful.\n";
 
 
     //Start capture and playback threads
