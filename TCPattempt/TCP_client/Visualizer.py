@@ -1,9 +1,12 @@
 import socket
 import time
-import matplotlib.pyplot as plt
 import numpy as np
 import errno
 import signal
+
+import matplotlib
+matplotlib.use('Agg') 
+from matplotlib import pyplot as plt
 
 # Define constants
 LOCAL_PORT = 65432

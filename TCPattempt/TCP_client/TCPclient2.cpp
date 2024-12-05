@@ -249,8 +249,18 @@ int main() {
     //Ignore SIGPIPE
     signal(SIGPIPE, SIG_IGN);
 
-    //Connect to server
     int sockfd = connect_server(SERVER_IP, PORT);
+    
+    
+    int yes = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+        perror("setsockopt");
+        exit(1);
+    }   
+
+
+    //Connect to server
+    
     if (sockfd == -1) {
         std::cerr << "Server connection error.\n";
         return 1;  //Unable to connnect 
