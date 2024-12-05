@@ -29,11 +29,11 @@
 
 
  //Initialize global constants 
- #define PORT1 12345  //Port for client a 
- #define PORT2 54321  //Port for client b 
+ #define PORT1 54321  //Port for client a 
+ #define PORT2 12345  //Port for client b 
  #define BUFFSIZE 1024 
- #define CLIENT1_IP "192.168.1.83"
- #define CLIENT2_IP "192.168.1.85"
+ #define CLIENT1_IP "192.168.1.85"
+ #define CLIENT2_IP "192.168.1.83"
  #define SRATE 44100 
  #define Channels 2 
  
