@@ -11,74 +11,65 @@
 #include <unistd.h>
 #include <signal.h>
 #include <netinet/in.h>
+#include <sys/wait.h>
+#include <algorithm> 
+
 
 #define SERVER_PORT 12345
 #define BACKLOG 5
 #define BUFFSIZE 4096
 
-std::vector<int> 2; // Vector to store connected clients
+std::vector<int> clients; // Vector to store connected clients
 std::mutex client_m;      // Mutex for thread-safe access to the clients vector
 std::atomic<bool> stop_server(false);
 
 // Handle client connection
+#include <algorithm> // For std::remove
+#include <sys/wait.h> // For waitpid
+
 void handle_client(int client_socket) {
     char buffer[BUFFSIZE];
-    int bytes_received;
+    int byte_num;
 
-    while ((bytes_received = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
-        // Extract the timestamp from the received data
-        int64_t timestamp;
-        memcpy(&timestamp, buffer, sizeof(timestamp));
-        char* audio_data = buffer + sizeof(timestamp);
-        int audio_data_size = bytes_received - sizeof(timestamp);
-
-        // Calculate latency
-        auto now = std::chrono::steady_clock::now();
-        int64_t server_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  now.time_since_epoch())
-                                  .count();
-        int latency = server_time - timestamp;
-
-        std::cout << "Latency from client: " << latency << " ms\n";
-
-        // Send acknowledgment for latency measurement
-        if (send(client_socket, &server_time, sizeof(server_time), 0) == -1) {
-            perror("Acknowledgment send failed");
-            break;
-        }
-
-        // Broadcast audio data to other clients
-        {
-            std::lock_guard<std::mutex> lock(client_m);
-            for (int other_client : clients) {
-                if (other_client != client_socket) {
-                    if (send(other_client, audio_data, audio_data_size, 0) == -1) {
-                        perror("Broadcast send failed");
-                    }
+    while ((byte_num = recv(client_socket, buffer, sizeof(buffer), 0)) > 0) {
+        // Broadcast message to all clients
+        std::lock_guard<std::mutex> lock(client_m); // Lock clients while broadcasting
+        for (int other_client : clients) {
+            if (other_client != client_socket) {
+                if (send(other_client, buffer, byte_num, 0) == -1) {
+                    perror("send error");
                 }
             }
         }
     }
 
-    if (bytes_received == 0) {
+    // Handle client disconnection or receive error
+    if (byte_num == 0) {
         std::cout << "Client disconnected.\n";
-    } else if (bytes_received < 0) {
-        perror("Receive error");
+    } else if (byte_num == -1) {
+        perror("recv error");
     }
 
-    // Remove the client from the list and close the socket
+    // Remove client from the list
     {
         std::lock_guard<std::mutex> lock(client_m);
         clients.erase(std::remove(clients.begin(), clients.end(), client_socket), clients.end());
     }
-    close(client_socket);
+
+    close(client_socket); // Close the client socket
 }
 
-// Reap zombie processes
-void sigchld_handler(int) {
+void sigchld_handler(int s) {
+    // Save and restore errno because waitpid might overwrite it
+    int saved_errno = errno;
+
     while (waitpid(-1, nullptr, WNOHANG) > 0) {
+        // Reap zombie processes
     }
+
+    errno = saved_errno;
 }
+
 
 int main() {
     signal(SIGPIPE, SIG_IGN); // Ignore SIGPIPE to prevent crashes
